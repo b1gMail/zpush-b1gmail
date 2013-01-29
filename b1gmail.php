@@ -23,14 +23,16 @@
  *
  */
 
-include_once('backend/b1gmail/db.php');
 include_once('lib/default/diffbackend/diffbackend.php');
+require_once('backend/b1gmail/db.php');
+require_once('include/mimeDecode.php');
 require_once('include/z_RFC822.php');
 
 class BackendB1GMail extends BackendDiff
 {
 	private $dbHandle;
 	private $db;
+	private $prefs;
 	private $loggedOn = false;
 	private $userID = 0;
 	private $userRow;
@@ -55,6 +57,9 @@ class BackendB1GMail extends BackendDiff
 			throw new FatalException('Failed to select b1gMail MySQL DB', 0, null, LOGLEVEL_FATAL);
 		$this->db = new DB($this->dbHandle);
 		$this->db->Query('SET NAMES utf8');
+		
+		// read preferences
+		$this->prefs = $this->GetPrefs();
 	}
 	
 	/**
@@ -679,7 +684,13 @@ class BackendB1GMail extends BackendDiff
 			'high'		=> 2
 		);
 		
-		$res = $this->db->Query('SELECT `von`,`betreff`,`flags`,`priority`,`datum` FROM {pre}mails WHERE `id`=? AND `userid`=?',
+		// get content parameters
+		$truncSize 		= Utils::GetTruncSize($contentparameters->GetTruncation());
+		$mimeSupport 	= $contentparameters->GetMimeSupport();
+		$bodyPreference	= $contentparameters->GetBodyPreference();
+		
+		// get mail row
+		$res = $this->db->Query('SELECT `von`,`betreff`,`flags`,`priority`,`datum`,`body` FROM {pre}mails WHERE `id`=? AND `userid`=?',
 			$id,
 			$this->userID);
 		if($res->RowCount() != 1)
@@ -687,22 +698,50 @@ class BackendB1GMail extends BackendDiff
 		$row = $res->FetchArray(MYSQL_ASSOC);
 		$res->Free();
 		
-		$truncSize 		= Utils::GetTruncSize($contentparameters->GetTruncation());
-		$mimeSupport 	= $contentparameters->GetMimeSupport();
-		$bodyPreference	= $contentparameters->GetBodyPreference();
-		
+		// create result object
 		$result = new SyncMail();
 		$result->messageclass	= 'IPM.Note';
+		$result->internetcpid	= INTERNET_CPID_UTF8;
+		if(Request::GetProtocolVersion() >= 12.0)
+			$result->contentclass 	= 'urn:content-classes:message';
 		$result->datereceived	= $row['datum'];
 		$result->read			= ($row['flags'] & 1) == 0;
 		$result->from			= $row['von'];
 		$result->subject 		= $row['betreff'];
 		$result->importance		= $prioTrans[$row['priority']];
 		
-		$result->internetcpid	= INTERNET_CPID_UTF8;
-		if(Request::GetProtocolVersion() >= 12.0)
-			$result->contentclass 	= 'urn:content-classes:message';
+		// get message
+		if($row['body'] == 'file')
+			$mailData = @file_get_contents($this->DataFilename($id));
+		else
+			$mailData = $row['body'];
+		unset($row['body']);
 		
+		// parse message
+		$mimeParser = new Mail_mimeDecode($mailData);
+		$parsedMail = $mimeParser->decode(array(
+			'decode_headers' => true,
+			'decode_bodies' => true,
+			'include_bodies' => true,
+			'charset' => 'utf-8'));
+		
+		// parse addresses
+		$result->to = $result->cc = $result->reply_to = array();
+		$addresses = array('to' => array(), 'cc' => array(), 'reply-to' => array());
+		if(!empty($parsedMail->headers['to']))
+			$result->to = $this->ExplodeOutsideOfQuotation($parsedMail->headers['to'], array(',', ';'));
+		if(!empty($parsedMail->headers['cc']))
+			$result->cc = $this->ExplodeOutsideOfQuotation($parsedMail->headers['cc'], array(',', ';'));
+		if(!empty($parsedMail->headers['reply-to']))
+			$result->reply_to = $this->ExplodeOutsideOfQuotation($parsedMail->headers['reply-to'], array(',', ';'));
+		
+		// assign other headers which are not available in $row
+		if(isset($parsedMail->headers['thread-topic']))
+			$result->threadtopic = $parsedMail->headers['thread-topic'];
+		
+		// TODO: body and attachments
+		
+		// TODO: remove logging of result object once finished
 		ZLog::Write(LOGLEVEL_DEBUG, print_r($result, true));
 
 		return($result);
@@ -710,7 +749,6 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Internally used function to get details of a task.
-	 * TODO! NOT IMPLEMENTED YET!
 	 *
 	 * @param string $folderid Folder ID
 	 * @param string $id Task ID
@@ -1244,7 +1282,6 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Internally used function to delete a date.
-	 * TODO! NOT IMPLEMENTED YET!
 	 *
 	 * @param string $folderid Folder ID
 	 * @param string $id Date ID
@@ -1256,7 +1293,15 @@ class BackendB1GMail extends BackendDiff
 			$folderid,
 			$id));
 		
-		// TODO
+		$this->db->Query('DELETE FROM {pre}dates WHERE `id`=? AND `user`=?',
+			$id,
+			$this->userID);
+		if($this->db->AffectedRows() == 1)
+		{
+			$this->db->Query('DELETE FROM {pre}dates_attendees WHERE `date`=?',
+				$id);
+			$this->ChangelogDeleted(1, $id, time());
+		}
 		
 		return(false);
 	}
@@ -1281,6 +1326,7 @@ class BackendB1GMail extends BackendDiff
 		{
 			$this->db->Query('DELETE FROM {pre}adressen_gruppen_member WHERE `adresse`=?',
 				$id);
+			$this->ChangelogDeleted(0, $id, time());
 		}
 		return(true);
 	}
@@ -1301,6 +1347,10 @@ class BackendB1GMail extends BackendDiff
 		$this->db->Query('DELETE FROM {pre}tasks WHERE `id`=? AND `user`=?',
 			$id,
 			$this->userID);
+		if($this->db->AffectedRows() == 1)
+		{
+			$this->ChangelogDeleted(2, $id, time());
+		}
 		return(true);
 	}
 	
@@ -1333,7 +1383,6 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Internally used function to move a date to another folder.
-	 * TODO! NOT IMPLEMENTED YET!
 	 *
 	 * @param string $folderid Folder ID
 	 * @param string $id Date ID
@@ -1347,9 +1396,20 @@ class BackendB1GMail extends BackendDiff
 			$id,
 			$newfolderid));
 		
-		// TODO
+		if(strlen($newfolderid) <= 7 || substr($newfolderid, 0, 7) != '.dates:')
+			return(false);
+
+		list(, $newGroupID) = explode(':', $newfolderid);
+		if($newGroupID == 0)
+			$newGroupID = -1;
+
+		$this->db->Query('UPDATE {pre}dates SET `group`=? WHERE `id`=? AND `user`=?',
+			$newGroupID,
+			$id,
+			$this->userID);
+		$this->ChangelogUpdated(1, $id, time());
 		
-		return(false);
+		return((string)$id);
 	}
 	
 	/**
@@ -1531,5 +1591,107 @@ class BackendB1GMail extends BackendDiff
 			return('image/png');
 		else
 			return('image/unknown');
+	}
+	
+	/**
+	 * Get file name of data item.
+	 *
+	 * @param int $id Item ID
+	 * @param string $ext Extension
+	 * @return string
+	 */
+	private function DataFilename($id, $ext = 'msg')
+	{
+		$dir = $this->prefs['datafolder'];
+
+		if(file_exists($dir . $id . '.' . $ext))
+			return($dir . $id . '.' . $ext);
+
+		for($i=0; $i<strlen((string)$id); $i++)
+		{
+			$dir .= substr((string)$id, $i, 1);
+			if(($i+1) % 2 == 0)
+			{
+				$dir .= '/';
+				if(!file_exists($dir) && $this->prefs['structstorage'] == 'yes' && ($i<strlen((string)$id)-1))
+				{
+					@mkdir($dir, 0777);
+					@chmod($dir, 0777);
+				}
+			}
+		}
+
+		if(substr($dir, -1) == '/')
+			$dir = substr($dir, 0, -1);
+		$dir .= '.' . $ext;
+
+		if(file_exists($dir) || $this->prefs['structstorage'] == 'yes')
+			return($dir);
+		else 
+			return($this->prefs['datafolder'] . $id . '.' . $ext);
+	}
+	
+	/**
+	 * Get b1gMail preferences.
+	 *
+	 * @return array
+	 */
+	private function GetPrefs()
+	{
+		$res = $this->db->Query('SELECT * FROM {pre}prefs LIMIT 1');
+		$prefs = $res->FetchArray(MYSQL_ASSOC);
+		$res->Free();
+		
+		return($prefs);
+	}
+	
+	/**
+	 * split string by $separator, taking care of "quotations"
+	 *
+	 * @param string $string Input
+	 * @param mixed $separator Separator(s), may be an array
+	 * @return array
+	 */
+	private function ExplodeOutsideOfQuotation($string, $separator, $preserveQuotes = false)
+	{
+		$result = array();
+
+		$inEscape = $inQuote = false;
+		$tmp = '';
+		for($i=0; $i<strlen($string); $i++)
+		{
+			$c = $string[$i];
+			if(((!is_array($separator) && $c == $separator)
+				|| (is_array($separator) && in_array($c, $separator)))
+				&& !$inQuote
+				&& !$inEscape)
+			{
+				if(trim($tmp) != '')
+				{
+					$result[] = trim($tmp);
+					$tmp = '';
+				}
+			}
+			else if($c == '"' && !$inEscape)
+			{
+				$inQuote = !$inQuote;
+				if($preserveQuotes)
+					$tmp .= $c;
+			}
+			else if($c == '\\' && !$inEscape)
+				$inEscape = true;
+			else
+			{
+				$tmp .= $c;
+				$inEscape = false;
+			}
+		}
+		if(trim($tmp) != '')
+		{
+			$result[] = trim($tmp);
+			$tmp = '';
+		}
+
+		return($result);
 	}
 };
