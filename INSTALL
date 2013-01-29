@@ -1,0 +1,41 @@
+Installing the Z-Push b1gMail backend
+=====================================
+
+Requirements
+------------
+The Z-Push b1gMail backend requires Z-Push 2 and b1gMail >= 7.3.0-Beta5.
+b1gMail has to be in UTF-8 mode.
+
+Installing
+----------
+At first, Z-Push has to be installed as described in its INSTALL file.
+
+To add the b1gMail backend, create a folder called backend/b1gmail/ in
+your Z-Push directory and copy the  PHP files of the b1gMail backend
+archive into that directory.
+
+Once the files have been copied, edit Z-Push's config.php file and set 
+the backend provider to 'BackendB1GMail' by modifying the appropriate
+line:
+	define('BACKEND_PROVIDER', 'BackendB1GMail');
+
+The backend also needs to have access to your b1gMail MySQL database.
+Add the following lines to the config.php file and change the MySQL
+login according to your environment:
+	define('B1GMAIL_DB_HOST',		'localhost');
+	define('B1GMAIL_DB_USER',		'root');
+	define('B1GMAIL_DB_PASS',		'password');
+	define('B1GMAIL_DB_DB',			'b1gmail');
+	define('B1GMAIL_DB_PREFIX',		'bm60_');
+
+Allow synchronization in the b1gMail ACP at 'Users & Groups' =>
+'Groups' to allow access to the Z-Push service.
+
+Setting up your mobile device
+-----------------------------
+See Z-Push's INSTALL file.
+
+Troubleshooting
+---------------
+Double-check the MySQL login information in the config.php file.
+See Z-Push's INSTALL file.
