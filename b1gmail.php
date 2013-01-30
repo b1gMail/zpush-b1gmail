@@ -688,6 +688,17 @@ class BackendB1GMail extends BackendDiff
 		$truncSize 		= Utils::GetTruncSize($contentparameters->GetTruncation());
 		$mimeSupport 	= $contentparameters->GetMimeSupport();
 		$bodyPreference	= $contentparameters->GetBodyPreference();
+		$bodyPrefType	= SYNC_BODYPREFERENCE_PLAIN;
+		if($bodyPreference !== false)
+		{
+			// we cannot handle RTF
+			if(in_array(SYNC_BODYPREFERENCE_RTF, $bodyPreference))
+				unset($bodyPreference[array_search(SYNC_BODYPREFERENCE_RTF, $bodyPreference)]);
+			
+			// still entries left in $bodyPreference array => get best match
+			if(count($bodyPreference) > 0)
+				$bodyPrefType = Utils::GetBodyPreferenceBestMatch($bodyPreference);
+		}
 		
 		// get mail row
 		$res = $this->db->Query('SELECT `von`,`betreff`,`flags`,`priority`,`datum`,`body` FROM {pre}mails WHERE `id`=? AND `userid`=?',
@@ -739,7 +750,102 @@ class BackendB1GMail extends BackendDiff
 		if(isset($parsedMail->headers['thread-topic']))
 			$result->threadtopic = $parsedMail->headers['thread-topic'];
 		
-		// TODO: body and attachments
+		// get body...
+		if(Request::GetProtocolVersion() >= 12.0)
+		{
+			$result->asbody = new SyncBaseBody();
+			
+			// get body according to body preference
+			if($bodyPrefType == SYNC_BODYPREFERENCE_PLAIN)
+			{
+				$result->asbody->data = $this->GetTextFromParsedMail($parsedMail, 'plain');
+				$result->asbody->type = SYNC_BODYPREFERENCE_PLAIN;
+				$result->nativebodytype = SYNC_BODYPREFERENCE_PLAIN;
+				
+				if(empty($result->asbody->data))
+				{
+					$result->asbody->data = Utils::ConvertHtmlToText($this->GetTextFromParsedMail($parsedMail, 'html'));
+					if(!empty($result->asbody->data))
+						$result->nativebodytype = SYNC_BODYPREFERENCE_HTML;
+				}
+			}
+			else if($bodyPrefType == SYNC_BODYPREFERENCE_HTML)
+			{
+				$result->asbody->data = $this->GetTextFromParsedMail($parsedMail, 'html');
+				$result->asbody->type = SYNC_BODYPREFERENCE_HTML;
+				$result->nativebodytype = SYNC_BODYPREFERENCE_HTML;
+				
+				if(empty($result->asbody->data))
+				{
+					$result->asbody->data = $this->GetTextFromParsedMail($parsedMail, 'plain');
+					
+					$result->asbody->type = SYNC_BODYPREFERENCE_PLAIN;
+					$result->nativebodytype = SYNC_BODYPREFERENCE_PLAIN;
+				}
+			}
+			else if($bodyPrefType == SYNC_BODYPREFERENCE_MIME)
+			{
+				$result->asbody->data = $mailData;
+				$result->asbody->type = SYNC_BODYPREFERENCE_MIME;
+				$result->nativebodytype = SYNC_BODYPREFERENCE_MIME;
+			}
+			else
+			{
+				ZLog::Write(LOGLEVEL_ERROR, sprintf('Unknown body type: %d', $bodyPrefType));
+			}
+			
+			// truncate, if required
+			if(strlen($result->asbody->data) > $truncSize)
+			{
+				$result->asbody->data = Utils::Utf8_truncate($result->asbody->data, $truncSize);
+				$result->asbody->truncated = true;
+			}
+			else
+				$result->asbody->truncated = false;
+			
+			$result->asbody->estimatedDataSize = strlen($result->asbody->data);
+			
+			// TODO: preview
+		}
+		else
+		{
+			if($bodyPrefType == SYNC_BODYPREFERENCE_MIME)
+			{
+				$result->mimedata = $mailData;
+				
+				if(strlen($result->mimedata) > $truncSize)
+				{
+					$result->mimedata = substr($result->mimedata, 0, $truncSize);
+					$result->mimetruncated = true;
+				}
+				else
+					$result->mimetruncated = false;
+				
+				$result->mimesize = strlen($result->mimedata);
+			}
+			else
+			{
+				$result->body = $this->GetTextFromParsedMail($parsedMail, 'plain');
+				if(empty($result->body))
+					$result->body = Utils::ConvertHtmlToText($this->GetTextFromParsedMail($parsedMail, 'html'));
+				
+				if(strlen($result->body) > $truncSize)
+				{
+					$result->body = substr($result->body, 0, $truncSize);
+					$result->bodytruncated = true;
+				}
+				else
+					$result->bodytruncated = false;
+				
+				$result->bodysize = strlen($result->body);
+			}
+		}
+		
+		// ...and attachments
+		if($bodyPrefType != SYNC_BODYPREFERENCE_MIME)
+		{
+			// TODO: get attachments
+		}
 		
 		// TODO: remove logging of result object once finished
 		ZLog::Write(LOGLEVEL_DEBUG, print_r($result, true));
@@ -1254,6 +1360,9 @@ class BackendB1GMail extends BackendDiff
 			$mailFlags,
 			$id,
 			$this->userID);
+		
+		$this->IncMailboxGeneration();
+		
 		return(true);
 	}
 	
@@ -1276,7 +1385,28 @@ class BackendB1GMail extends BackendDiff
 			return($this->DeleteTask($folderid, $id));
 		else if(strlen($folderid) > 7 && substr($folderid, 0, 7) == '.dates:')
 			return($this->DeleteDate($folderid, $id));
+		else if(strlen($folderid) > 7 && substr($folderid, 0, 7) == '.email:')
+			return($this->DeleteMail($folderid, $id));
 
+		return(false);
+	}
+	
+	/**
+	 * Internally used function to delete an email.
+	 * TODO! NOT IMPLEMENTED YET!
+	 *
+	 * @param string $folderid Folder ID
+	 * @param string $id Email ID
+	 * @return bool
+	 */
+	private function DeleteMail($folderid, $id)
+	{
+		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::DeleteMail(%s,%s)',
+			$folderid,
+			$id));
+		
+		// TODO
+		
 		return(false);
 	}
 	
@@ -1302,8 +1432,7 @@ class BackendB1GMail extends BackendDiff
 				$id);
 			$this->ChangelogDeleted(1, $id, time());
 		}
-		
-		return(false);
+		return(true);
 	}
 	
 	/**
@@ -1445,6 +1574,8 @@ class BackendB1GMail extends BackendDiff
 				$id,
 				$this->userID);
 		}
+		
+		$this->IncMailboxGeneration();
 		
 		return((string)$id);
 	}
@@ -1693,5 +1824,42 @@ class BackendB1GMail extends BackendDiff
 		}
 
 		return($result);
+	}
+	
+	/**
+	 * Extract text from parsed mail.
+	 *
+	 * @param object $parsedMail Parsed mail as returned by Mail_mimeDecode class
+	 * @param string $type Text type (plain/html)
+	 * @return string
+	 */
+	private function GetTextFromParsedMail($parsedMail, $type)
+	{		
+		$result = '';
+		$objs = array($parsedMail);
+		
+		while(count($objs) > 0)
+		{
+			$obj = array_shift($objs);
+			
+			if(!isset($obj->ctype_primary))
+				continue;
+			
+			if($obj->ctype_primary == 'text' && $obj->ctype_secondary == $type)
+				$result .= $obj->body;
+			else if($obj->ctype_primary == 'multipart' && !empty($obj->parts))
+				$objs = array_merge($objs, $obj->parts);
+		}
+		
+		return($body);
+	}
+	
+	/**
+	 * Increase the account's mailbox generation.
+	 */
+	private function IncMailboxGeneration()
+	{
+		$this->db->Query('UPDATE {pre}users SET `mailbox_generation`=`mailbox_generation`+1 WHERE `id`=?',
+			$this->userID);
 	}
 };
