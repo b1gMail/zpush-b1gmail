@@ -451,7 +451,11 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Change a folder.
-	 * TODO! NOT IMPLEMENTED YET!
+	 *
+	 * @param string $folderid Parent folder ID
+	 * @param string $oldid Folder ID
+	 * @param int $type Folder type
+	 * @return array Same as StatFolder()
 	 */
 	public function ChangeFolder($folderid, $oldid, $displayname, $type)
 	{
@@ -460,8 +464,139 @@ class BackendB1GMail extends BackendDiff
 			$oldid,
 			$displayname,
 			$type));
-		// TODO
+			
+		if(strlen($folderid) > 7 && substr($folderid, 0, 7) == '.tasks:')
+			return($this->ChangeTaskList($folderid, $oldid, $displayname, $type));
+		else if(strlen($folderid) > 7 && substr($folderid, 0, 7) == '.email:')
+			return($this->ChangeMailFolder($folderid, $oldid, $displayname, $type));
+		else if(strlen($folderid) > 7 && substr($folderid, 0, 7) == '.dates:')
+			return($this->ChangeDateGroup($folderid, $oldid, $displayname, $type));
+
 		return(false);
+	}
+	
+	/**
+	 * Internally used function to create/rename a task list.
+	 *
+	 * @param string $folderid Parent task list ID
+	 * @param string $oldid Task list ID
+	 * @param int $type Folder type
+	 * @return array Same as StatFolder()
+	 */
+	private function ChangeTaskList($folderid, $oldid, $displayname, $type)
+	{
+		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::ChangeTaskList(%s,%s,%s,%s)',
+			$folderid,
+			$oldid,
+			$displayname,
+			$type));
+		
+		// create new task list
+		if(empty($oldid))
+		{
+			$this->db->Query('INSERT INTO {pre}tasklists(`userid`,`title`) VALUES(?,?)',
+				$this->userID,
+				$displayname);
+			$oldid = '.tasks:' . $this->db->InsertId();
+		}
+		
+		// rename existing task list
+		else
+		{
+			list(, $taskListID) = explode(':', $oldid);
+			$this->db->Query('UPDATE {pre}tasklists SET `title`=? WHERE `userid`=? AND `tasklistid`=?',
+				$displayname,
+				$this->userID,
+				$taskListID);
+		}
+		
+		return($this->StatFolder($oldid));
+	}
+	
+	/**
+	 * Internally used function to create/rename a date group.
+	 *
+	 * @param string $folderid Parent date group ID
+	 * @param string $oldid Date group ID
+	 * @param int $type Folder type
+	 * @return array Same as StatFolder()
+	 */
+	private function ChangeDateGroup($folderid, $oldid, $displayname, $type)
+	{
+		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::ChangeDateGroup(%s,%s,%s,%s)',
+			$folderid,
+			$oldid,
+			$displayname,
+			$type));
+
+		// create new date group
+		if(empty($oldid))
+		{
+			$this->db->Query('INSERT INTO {pre}dates_groups(`user`,`title`) VALUES(?,?)',
+				$this->userID,
+				$displayname);
+			$oldid = '.dates:' . $this->db->InsertId();
+		}
+
+		// rename existing date group
+		else
+		{
+			list(, $groupID) = explode(':', $oldid);
+			$this->db->Query('UPDATE {pre}dates_groups SET `title`=? WHERE `user`=? AND `id`=?',
+				$displayname,
+				$this->userID,
+				$groupID);
+		}
+
+		return($this->StatFolder($oldid));
+	}
+	
+	/**
+	 * Internally used function to create/rename an email folder.
+	 *
+	 * @param string $folderid Parent folder ID
+	 * @param string $oldid Folder ID
+	 * @param int $type Folder type
+	 * @return array Same as StatFolder()
+	 */
+	private function ChangeMailFolder($folderid, $oldid, $displayname, $type)
+	{
+		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::ChangeMailFolder(%s,%s,%s,%s)',
+			$folderid,
+			$oldid,
+			$displayname,
+			$type));
+		
+		list(, $parentFolderID) = explode(':', $folderid);
+		if($parentFolderID <= 0)
+			$parentFolderID = -1;
+
+		// create new folder
+		if(empty($oldid))
+		{
+			$this->db->Query('INSERT INTO {pre}folders(`userid`,`titel`,`parent`,`subscribed`,`intelligent`) VALUES(?,?,?,?,?)',
+				$this->userID,
+				$displayname,
+				$parentFolderID,
+				1,
+				0);
+			$oldid = '.email:' . $this->db->InsertId();
+		}
+
+		// rename existing folder
+		else
+		{
+			list(, $groupID) = explode(':', $oldid);
+			$this->db->Query('UPDATE {pre}folders SET `titel`=?,`parent`=? WHERE `userid`=? AND `id`=?',
+				$displayname,
+				$parentFolderID,
+				$this->userID,
+				$groupID);
+		}
+		
+		$this->IncMailboxGeneration();
+
+		return($this->StatFolder($oldid));
 	}
 	
 	/**
