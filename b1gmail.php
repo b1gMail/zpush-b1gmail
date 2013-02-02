@@ -213,7 +213,7 @@ class BackendB1GMail extends BackendDiff
 		);
 		
 		// user-created email folders
-		$res = $this->db->Query('SELECT `id`,`titel`,`parent` FROM {pre}folders WHERE `userid`=? AND `intelligent`=0',
+		$res = $this->db->Query('SELECT `id`,`titel`,`parent` FROM {pre}folders WHERE `userid`=? AND `intelligent`=0 AND `subscribed`=1',
 			$this->userID);
 		while($row = $res->FetchArray(MYSQL_ASSOC))
 		{
@@ -400,7 +400,7 @@ class BackendB1GMail extends BackendDiff
 			}
 			else if($folderID > 0)
 			{
-				$res = $this->db->Query('SELECT `titel`,`parent` FROM {pre}folders WHERE `id`=? AND `userid`=?',
+				$res = $this->db->Query('SELECT `titel`,`parent` FROM {pre}folders WHERE `id`=? AND `userid`=? AND `subscribed`=1',
 					$folderID,
 					$this->userID);
 				while($row = $res->FetchArray(MYSQL_ASSOC))
