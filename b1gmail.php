@@ -639,9 +639,8 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Internally used function to retrieve a list of dates.
-	 * TODO! NOT IMPLEMENTED YET!
 	 *
-	 * @param string $folderid Folder ID
+	 * @param string $folderid Date group ID
 	 * @param int $cutoffdate Cut-off date timestamp
 	 * @return array
 	 */
@@ -651,9 +650,25 @@ class BackendB1GMail extends BackendDiff
 			$folderid,
 			$cutoffdate));
 		
-		// TODO
+		list(, $dateGroupID) = explode(':', $folderid);
+		if($dateGroupID <= 0)
+			$dateGroupID = -1;
+		$result = array();
+
+		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}dates'
+								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=1 AND {pre}changelog.`itemid`={pre}dates.`id`'
+								. ' WHERE `user`=? AND `group`=?', $this->userID, $dateGroupID);
+		while($row = $res->FetchArray(MYSQL_ASSOC))
+		{
+			$result[] = array(
+				'id'		=> $row['id'],
+				'mod'		=> max($row['created'], $row['updated']),
+				'flags'		=> 1
+			);
+		}
+		$res->Free();
 		
-		return(array());
+		return($result);
 	}
 	
 	/**
@@ -706,7 +721,7 @@ class BackendB1GMail extends BackendDiff
 		$result = array();
 		
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}tasks'
-								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=2 AND {pre}changelog.`itemid`={pre}tasks.id'
+								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=2 AND {pre}changelog.`itemid`={pre}tasks.`id`'
 								. ' WHERE `user`=? AND `tasklistid`=?', $this->userID, $taskListID);
 		while($row = $res->FetchArray(MYSQL_ASSOC))
 		{
@@ -737,7 +752,7 @@ class BackendB1GMail extends BackendDiff
 		$result = array();
 		
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}adressen'
-								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=0 AND {pre}changelog.`itemid`={pre}adressen.id'
+								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=0 AND {pre}changelog.`itemid`={pre}adressen.`id`'
 								. ' WHERE `user`=?', $this->userID);
 		while($row = $res->FetchArray(MYSQL_ASSOC))
 		{
@@ -780,7 +795,6 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Internally used function to get details of a date.
-	 * TODO! NOT IMPLEMENTED YET!
 	 *
 	 * @param string $folderid Folder ID
 	 * @param string $id Date ID
@@ -793,9 +807,104 @@ class BackendB1GMail extends BackendDiff
 			$folderid,
 			$id));
 		
-		// TODO
+		// get date row
+		$res = $this->db->Query('SELECT * FROM {pre}dates WHERE `user`=? AND `id`=?',
+			$this->userID, $id);
+		if($res->RowCount() != 1)
+			return(false);
+		$row = $res->FetchArray(MYSQL_ASSOC);
+		$res->Free();
 		
-		return(false);
+		// create result object
+		$result = new SyncAppointment();
+		$result->subject		= $row['title'];
+		$result->location		= $row['location'];
+		$result->body			= $row['text'];
+		$result->bodytruncated	= false;
+		$result->alldayevent	= ($row['flags'] & 1) != 0;
+		$result->starttime		= $row['startdate'];
+		$result->endtime		= $row['enddate'];
+		if(($row['flags'] & (2|4)) != 0)
+			$result->reminder	= (int)($row['reminder']/60);
+		
+		// repeating?
+		if(($row['repeat_flags'] & (8|16|32|64)) != 0)
+		{
+			$rec = new SyncRecurrence();
+			
+			// daily
+			if(($row['repeat_flags'] & 8) != 0)
+			{
+				$rec->type 			= 0;
+				$rec->interval		= max(1, $row['repeat_value']);
+				$rec->dayofweek		= 1|2|4|8|16|32|64;
+				
+				// exceptions
+				if(strlen($row['repeat_extra1']) > 0)
+				{
+					$exceptions = explode(',', $row['repeat_extra1']);
+					foreach($exceptions as $ex)
+						$rec->dayofweek &= ~(1<<$ex);
+				}
+			}
+			
+			// weekly
+			else if(($row['repeat_flags'] & 16) != 0)
+			{
+				$rec->type			= 1;
+				$rec->interval		= max(1, $row['repeat_value']);
+			}
+			
+			// monthly mday
+			else if(($row['repeat_flags'] & 32) != 0)
+			{
+				$rec->type			= 3;
+				$rec->interval		= max(1, $row['repeat_value']);
+				$rec->dayofmonth	= max(1, min(31, $row['repeat_extra1']));
+			}
+			
+			// monthly wday
+			else if(($row['repeat_flags'] & 64) != 0)
+			{
+				$rec->type			= 2;
+				$rec->weekofmonth	= $row['repeat_extra1'] + 1;
+				$rec->dayofweek		= (1<<$row['repeat_extra2']);
+			}
+			
+			// repeat until
+			if(($row['repeat_flags'] & 4) != 0)			// date
+				$rec->until 		= $row['repeat_times'];
+			else if(($row['repeat_flags'] & 2) != 0)	// count
+				$rec->occurrences	= $row['repeat_times'] + 1;
+			
+			$result->recurrence = $rec;
+		}
+		
+		// get attendees
+		$result->attendees = array();
+		$res = $this->db->Query('SELECT `vorname`,`nachname`,`email`,`work_email`,`default_address` FROM {pre}adressen '
+								. 'INNER JOIN {pre}dates_attendees ON {pre}adressen.`id`={pre}dates_attendees.`address` '
+								. 'WHERE `user`=? AND `date`=?',
+								$this->userID, $id);
+		while($attRow = $res->FetchArray(MYSQL_ASSOC))
+		{
+			$att = new SyncAttendee();
+			$att->name 	= trim($attRow['vorname'] . ' ' . $attRow['nachname']);
+			if(empty($attRow['email']) || ($attRow['default_address'] == 2 && !empty($attRow['work_email'])))
+				$att->email = $attRow['work_email'];
+			else
+				$att->email = $attRow['email'];
+			$result->attendees[] = $att;
+		}
+		$res->Free();
+		
+		// unsupported fields
+		$result->sensitivity	= 0;
+		$result->busystatus		= 2;
+		$result->meetingstatus	= 0;
+		$result->timezone 		= false;	// TODO: Timezone data generation should be implemented.
+		
+		return($result);
 	}
 	
 	/**
@@ -1130,7 +1239,7 @@ class BackendB1GMail extends BackendDiff
 		$result = false;
 
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}dates'
-								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=1 AND {pre}changelog.`itemid`={pre}dates.id'
+								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=1 AND {pre}changelog.`itemid`={pre}dates.`id`'
 								. ' WHERE `user`=? AND `id`=?', $this->userID, $id);
 		while($row = $res->FetchArray(MYSQL_ASSOC))
 		{
@@ -1192,7 +1301,7 @@ class BackendB1GMail extends BackendDiff
 		$result = false;
 
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}tasks'
-								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=2 AND {pre}changelog.`itemid`={pre}tasks.id'
+								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=2 AND {pre}changelog.`itemid`={pre}tasks.`id`'
 								. ' WHERE `user`=? AND `id`=?', $this->userID, $id);
 		while($row = $res->FetchArray(MYSQL_ASSOC))
 		{
@@ -1223,7 +1332,7 @@ class BackendB1GMail extends BackendDiff
 		$result = false;
 
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}adressen'
-								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=0 AND {pre}changelog.`itemid`={pre}adressen.id'
+								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=0 AND {pre}changelog.`itemid`={pre}adressen.`id`'
 								. ' WHERE `user`=? AND `id`=?', $this->userID, $id);
 		while($row = $res->FetchArray(MYSQL_ASSOC))
 		{
