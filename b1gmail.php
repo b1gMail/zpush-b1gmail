@@ -1384,7 +1384,6 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Internally used function to change/create a date.
-	 * TODO! NOT IMPLEMENTED YET!
 	 *
 	 * @param string $folderid Folder ID
 	 * @param string $id Date ID
@@ -1397,8 +1396,188 @@ class BackendB1GMail extends BackendDiff
 			$folderid,
 			$id));
 		
-		// TOOD
-		return(false);
+		// read existing row
+		if(!empty($id))
+		{
+			$res = $this->db->Query('SELECT * FROM {pre}dates WHERE `id`=? AND `user`=?',
+				$id, $this->userID);
+			if($res->RowCount() != 1)
+				return(false);
+			$row = $res->FetchArray(MYSQL_ASSOC);
+			$res->Free();
+		}
+		else
+			$row = array('flags' => 0);
+		
+		// basic data
+		$row['title']			= $date->subject;
+		$row['text']			= $this->GetBody($date);
+		$row['location']		= $date->location;
+		$row['startdate']		= $date->starttime;
+		$row['enddate']			= $date->endtime;
+		$row['reminder']		= $date->reminder * 60;
+		if($date->alldayevent)
+		{
+			$row['flags']		|= 1;
+			$row['enddate']--;
+		}
+		else
+			$row['flags']		&= ~1;
+		if($date->reminder > 0 && ($row['flags'] & (2|4)) == 0)
+		{
+			$row['flags']		|= 2;	// remind by email - do not assume user wants an SMS reminder when he created the
+										// appointment on his internet-capable smartphone
+		}
+		
+		// initialize recurrence data
+		$row['repeat_flags']	= 0;
+		$row['repeat_times']	= 0;
+		$row['repeat_value']	= 0;
+		$row['repeat_extra1']	= '';
+		$row['repeat_extra2']	= '';
+		
+		// recurring?
+		if(isset($date->recurrence) && is_object($date->recurrence))
+		{
+			$rec = $date->recurrence;
+			
+			// daily
+			if($rec->type == 0 || ($rec->type == 1 && $rec->interval == 1 && isset($rec->dayofweek)))
+			{
+				$row['repeat_flags']	|= 8;
+				$row['repeat_value']	= max(1, $rec->interval);
+				
+				// convert dayofweek bitmask to b1gMail exception array
+				if(!empty($rec->dayofweek))
+				{
+					$exceptions = array();
+					for($i=0; $i<7; $i++)
+					{
+						if(($rec->dayofweek & (1<<$i)) == 0)	// day not set in dayofweek -> exception
+							$exceptions[] = $i;
+					}
+				}
+				
+				$row['repeat_extra1']	= implode(',', $exceptions);
+			}
+			
+			// weekly
+			else if($rec->type == 1)
+			{
+				$row['repeat_flags']	|= 16;
+				$row['repeat_value']	= max(1, $rec->interval);
+			}
+			
+			// monthly mday
+			else if($rec->type == 3)
+			{
+				$row['repeat_flags']	|= 32;
+				$row['repeat_value']	= max(1, $rec->interval);
+				$row['repeat_extra1']	= max(1, min(31, $rec->dayofmonth));
+			}
+			
+			// monthly wday
+			else if($rec->type == 2)
+			{
+				$row['repeat_flags']	|= 64;
+				$row['repeat_extra1']	= max(0, min(4, $rec->weekofmonth - 1));
+				$row['repeat_extra2']	= max(0, min(6, (int)log($rec->dayofweek, 2)));
+			}
+			
+			// repeat until date...
+			if(isset($rec->until) && $rec->until > 0)
+			{
+				$row['repeat_flags']	|= 4;
+				$row['repeat_times']	= $rec->until;
+			}
+			
+			// ...or n times
+			else if(isset($rec->occurences) && $rec->occurences > 0)
+			{
+				$row['repeat_flags']	|= 2;
+				$row['repeat_times']	= $rec->occurences + 1;
+			}
+		}
+		
+		// create new item
+		if(empty($id))
+		{
+			list(, $groupID) = explode(':', $folderid);
+			if($groupID <= 0)
+				$groupID = -1;
+			
+			$this->db->Query('INSERT INTO {pre}dates(`user`,`title`,`location`,`text`,`group`,`startdate`,`enddate`,`reminder`,`flags`, '
+							. '`repeat_flags`,`repeat_times`,`repeat_value`,`repeat_extra1`,`repeat_extra2`) '
+							. 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+				$this->userID,
+				$row['title'],
+				$row['location'],
+				$row['text'],
+				$groupID,
+				$row['startdate'],
+				$row['enddate'],
+				$row['reminder'],
+				$row['flags'],
+				$row['repeat_flags'],
+				$row['repeat_times'],
+				$row['repeat_value'],
+				$row['repeat_extra1'],
+				$row['repeat_extra2']);
+			$id = $this->db->InsertId();
+			
+			$this->ChangelogAdded(1, $id, time());
+		}
+		
+		// change existing item
+		else
+		{
+			$this->db->Query('UPDATE {pre}dates SET `title`=?,`location`=?,`text`=?,`startdate`=?,`enddate`=?,`reminder`=?,`flags`=?,'
+							. '`repeat_flags`=?,`repeat_times`=?,`repeat_value`=?,`repeat_extra1`=?,`repeat_extra2`=? '
+							. 'WHERE `id`=? AND `user`=?',
+				$row['title'],
+				$row['location'],
+				$row['text'],
+				$row['startdate'],
+				$row['enddate'],
+				$row['reminder'],
+				$row['flags'],
+				$row['repeat_flags'],
+				$row['repeat_times'],
+				$row['repeat_value'],
+				$row['repeat_extra1'],
+				$row['repeat_extra2'],
+				$id,
+				$this->userID);
+			
+			$this->ChangelogUpdated(1, $id, time());
+		}
+		
+		// determine attendee IDs
+		$attIDs = array();
+		if(isset($date->attendees) && is_array($date->attendees))
+		{
+			foreach($date->attendees as $att)
+			{
+				if(!is_object($att))
+					continue;
+				
+				$res = $this->db->Query('SELECT `id` FROM {pre}adressen WHERE (`email`=? OR `work_email`=?) AND `user`=? LIMIT 1',
+					$att->email, $att->email, $this->userID);
+				if($res->RowCount() != 1)
+					continue;
+				$attRow = $res->FetchArray(MYSQL_ASSOC);
+				$res->Free();
+				
+				$attIDs[] = $attRow['id'];
+			}
+		}
+		
+		// update attendees
+		$this->db->Query('DELETE FROM {pre}dates_attendees WHERE `date`=?', $id);
+		foreach($attIDs as $attID)
+			$this->db->Query('INSERT INTO {pre}dates_attendees(`date`,`address`) VALUES(?,?)', $id, $attID);
+		
+		return($this->StatMessage($folderid, $id));
 	}
 	
 	/**
@@ -2157,7 +2336,7 @@ class BackendB1GMail extends BackendDiff
 	{
 		if(Request::GetProtocolVersion() >= 12.0 && isset($obj->asbody))
 		{
-			if($result->asbody->type == SYNC_BODYPREFERENCE_HTML)
+			if($obj->asbody->type == SYNC_BODYPREFERENCE_HTML)
 				return(Utils::ConvertHtmlToText($obj->asbody->data));
 			else
 				return($obj->asbody->data);
