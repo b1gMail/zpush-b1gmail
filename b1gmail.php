@@ -819,13 +819,21 @@ class BackendB1GMail extends BackendDiff
 		$result = new SyncAppointment();
 		$result->subject		= $row['title'];
 		$result->location		= $row['location'];
-		$result->body			= $row['text'];
-		$result->bodytruncated	= false;
 		$result->alldayevent	= ($row['flags'] & 1) != 0;
 		$result->starttime		= $row['startdate'];
 		$result->endtime		= $row['enddate'];
 		if(($row['flags'] & (2|4)) != 0)
 			$result->reminder	= (int)($row['reminder']/60);
+		
+		// correct start time in case of an all-day event
+		if($result->alldayevent)
+		{
+			$result->starttime	= mktime(0, 0, 0,
+				date('m', $result->starttime), date('d', $result->starttime), date('Y', $result->starttime));
+		}
+		
+		// text
+		$this->SetBody($result, $row['text']);
 		
 		// repeating?
 		if(($row['repeat_flags'] & (8|16|32|64)) != 0)
@@ -1127,7 +1135,8 @@ class BackendB1GMail extends BackendDiff
 		$result = new SyncTask();
 		
 		if(!empty($row['titel']))			$result->subject			= $row['titel'];
-		if(!empty($row['comments']))		$result->body				= $row['comments'];
+		
+		$this->SetBody($result, $row['comments']);
 		
 		$result->complete		= $row['akt_status'] == 64;
 		if($result->complete)	$result->datecompleted = time();
@@ -1194,6 +1203,8 @@ class BackendB1GMail extends BackendDiff
 		
 		if(!empty($row['position']))		$result->jobtitle				= $row['position'];
 		if(!empty($row['geburtsdatum']))	$result->birthday				= $row['geburtsdatum'];
+		
+		$this->SetBody($result, $row['kommentar']);
 		
 		return($result);
 	}
@@ -1420,8 +1431,8 @@ class BackendB1GMail extends BackendDiff
 		{
 			$this->db->Query('INSERT INTO {pre}adressen(`user`,`vorname`,`nachname`,`tel`,`fax`,`strassenr`,`ort`,`plz`,`land`,'
 							. '`work_strassenr`,`work_plz`,`work_ort`,`work_land`,`work_email`,`work_tel`,`work_fax`,`work_handy`,'
-							. '`email`,`web`,`handy`,`firma`,`position`,`geburtsdatum`,`picture`'
-							. ') VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+							. '`email`,`web`,`handy`,`firma`,`position`,`geburtsdatum`,`picture`,`kommentar`'
+							. ') VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
 				$this->userID,
 				$contact->firstname,
 				$contact->lastname,
@@ -1445,7 +1456,8 @@ class BackendB1GMail extends BackendDiff
 				$contact->companyname,
 				$contact->jobtitle,
 				$contact->birthday,
-				$picData);
+				$picData,
+				$this->GetBody($contact));
 			$id = $this->db->InsertId();
 			
 			$this->ChangelogAdded(0, $id, time());
@@ -1456,7 +1468,7 @@ class BackendB1GMail extends BackendDiff
 		{
 			$this->db->Query('UPDATE {pre}adressen SET `vorname`=?,`nachname`=?,`tel`=?,`fax`=?,`strassenr`=?,`ort`=?,`plz`=?,`land`=?,'
 				. '`work_strassenr`=?,`work_plz`=?,`work_ort`=?,`work_land`=?,`work_email`=?,`work_tel`=?,`work_fax`=?,`work_handy`=?,'
-				. '`email`=?,`web`=?,`handy`=?,`firma`=?,`position`=?,`geburtsdatum`=?,`picture`=? '
+				. '`email`=?,`web`=?,`handy`=?,`firma`=?,`position`=?,`geburtsdatum`=?,`picture`=?,`kommentar`=? '
 				. 'WHERE `id`=? AND `user`=?',
 				$contact->firstname,
 				$contact->lastname,
@@ -1481,6 +1493,7 @@ class BackendB1GMail extends BackendDiff
 				$contact->jobtitle,
 				$contact->birthday,
 				$picData,
+				$this->GetBody($contact),
 				$id,
 				$this->userID);
 			
@@ -1514,15 +1527,16 @@ class BackendB1GMail extends BackendDiff
 		// create new item
 		if(empty($id))
 		{
-			$this->db->Query('INSERT INTO {pre}tasks(`user`,`tasklistid`,`akt_status`,`beginn`,`faellig`,`priority`,`titel`)'
-							. ' VALUES(?,?,?,?,?,?,?)',
+			$this->db->Query('INSERT INTO {pre}tasks(`user`,`tasklistid`,`akt_status`,`beginn`,`faellig`,`priority`,`titel`,`comments`)'
+							. ' VALUES(?,?,?,?,?,?,?,?)',
 				$this->userID,
 				$taskListID,
 				$task->complete ? 64 : 16,
 				$task->startdate > 0 ? $task->startdate : time(),
 				$task->duedate > 0 ? $task->duedate : time()+86400,
 				$prioTrans[$task->importance],
-				$task->subject);
+				$task->subject,
+				$this->GetBody($task));
 			$id = $this->db->InsertId();
 			
 			$this->ChangelogAdded(2, $id, time());
@@ -1548,13 +1562,15 @@ class BackendB1GMail extends BackendDiff
 		
 			$row['priority'] 	= $prioTrans[$task->importance];
 			$row['titel']		= $task->subject;
+			$row['comments']	= $this->GetBody($task);
 		
-			$this->db->Query('UPDATE {pre}tasks SET `akt_status`=?,`beginn`=?,`faellig`=?,`priority`=?,`titel`=? WHERE `id`=? AND `user`=?',
+			$this->db->Query('UPDATE {pre}tasks SET `akt_status`=?,`beginn`=?,`faellig`=?,`priority`=?,`titel`=?,`comments`=? WHERE `id`=? AND `user`=?',
 				$row['akt_status'],
 				$row['beginn'],
 				$row['faellig'],
 				$row['priority'],
 				$row['titel'],
+				$row['comments'],
 				$id,
 				$this->userID);
 		
@@ -2105,5 +2121,52 @@ class BackendB1GMail extends BackendDiff
 	{
 		$this->db->Query('UPDATE {pre}users SET `mailbox_generation`=`mailbox_generation`+1 WHERE `id`=?',
 			$this->userID);
+	}
+	
+	/**
+	 * Set body of a sync object.
+	 *
+	 * @param SyncObject &$result Sync object
+	 * @param string $text Text
+	 */
+	private function SetBody(&$result, $text)
+	{
+		if(Request::GetProtocolVersion() >= 12.0)
+		{
+			$result->asbody = new SyncBaseBody();
+			$result->asbody->data 				= $text;
+			$result->asbody->type 				= SYNC_BODYPREFERENCE_PLAIN;
+			$result->asbody->truncated 			= false;
+			$result->asbody->estimatedDataSize 	= strlen($result->asbody->data);
+		}
+		else
+		{
+			$result->body						= $text;
+			$result->bodytruncated				= false;
+			$result->bodysize					= strlen($result->body);
+		}
+	}
+	
+	/**
+	 * Get body of a sync object.
+	 *
+	 * @param SyncObject $obj Sync object
+	 * @return string
+	 */
+	private function GetBody($obj)
+	{
+		if(Request::GetProtocolVersion() >= 12.0 && isset($obj->asbody))
+		{
+			if($result->asbody->type == SYNC_BODYPREFERENCE_HTML)
+				return(Utils::ConvertHtmlToText($obj->asbody->data));
+			else
+				return($obj->asbody->data);
+		}
+		else
+		{
+			return($obj->body);
+		}
+		
+		return('');
 	}
 };
