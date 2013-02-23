@@ -594,22 +594,105 @@ class BackendB1GMail extends BackendDiff
 				$groupID);
 		}
 		
+		$this->IncMailboxStructureGeneration();
 		$this->IncMailboxGeneration();
-
+		
 		return($this->StatFolder($oldid));
 	}
 	
 	/**
 	 * Delete a folder.
-	 * TODO! NOT IMPLEMENTED YET!
+	 *
+	 * @param string $id Folder ID
+	 * @param string $parentid Parent folder ID
+	 * @return bool
 	 */
 	public function DeleteFolder($id, $parentid)
 	{
 		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::DeleteFolder(%s,%s)',
 			$id,
 			$parentid));
-		// TODO
+		
+		if(strlen($id) > 7 && substr($id, 0, 7) == '.tasks:')
+			return($this->DeleteTaskList($id));
+		else if(strlen($id) > 7 && substr($id, 0, 7) == '.email:')
+			return($this->DeleteMailFolder($id));
+		
 		return(false);
+	}
+	
+	/**
+	 * Delete a task list.
+	 *
+	 * @param string $id Task list ID
+	 * @return bool
+	 */
+	private function DeleteTaskList($id)
+	{
+		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::DeleteTaskList(%s)',
+			$id));
+		
+		list(, $taskListID) = explode(':', $id);
+		
+		$this->db->Query('DELETE FROM {pre}tasks WHERE `tasklistid`=? AND `user`=?',
+			$taskListID,
+			$this->userID);
+		$this->db->Query('DELETE FROM {pre}tasklists WHERE `tasklistid`=? AND `userid`=?',
+			$taskListID,
+			$this->userID);
+		
+		return($this->db->AffectedRows() > 0);
+	}
+	
+	/**
+	 * Delete a mail folder.
+	 *
+	 * @param string $id Mail folder ID
+	 * @retur bool
+	 */
+	private function DeleteMailFolder($id)
+	{
+		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::DeleteMailFolder(%s)',
+			$id));
+		
+		list(, $folderID) = explode(':', $id);
+		$result = false;
+		
+		// delete child folders
+		$res = $this->db->Query('SELECT `id` FROM {pre}folders WHERE `parent`=? AND `userid`=?',
+			$folderID,
+			$this->userID);
+		while($row = $res->FetchArray(MYSQL_ASSOC))
+		{
+			if($row['id'] == $folderID) continue;
+			$this->DeleteMailFolder('.email:' . $row['id']);
+		}
+		$res->Free();
+		
+		// delete folder
+		$this->db->Query('DELETE FROM {pre}folders WHERE `id`=? AND `userid`=?',
+			$folderID,
+			$this->userID);
+		$result = $this->db->AffectedRows() == 1;
+		
+		if($result)
+		{	
+			// this folder might have associated folder conditions we need to remove now
+			$this->db->Query('DELETE FROM {pre}folder_conditions WHERE `folder`=?',
+				$folderID);
+			
+			// move mails to trash
+			$this->db->Query('UPDATE {pre}mails SET `folder`=?,`trashstamp`=? WHERE `folder`=? AND `userid`=?',
+				-5,
+				time(),
+				$folderID,
+				$this->userID);
+			
+			$this->IncMailboxStructureGeneration();
+			$this->IncMailboxGeneration();
+		}
+		
+		return($result);
 	}
 	
 	/**
@@ -1832,7 +1915,6 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Internally used function to delete an email.
-	 * TODO! NOT IMPLEMENTED YET!
 	 *
 	 * @param string $folderid Folder ID
 	 * @param string $id Email ID
@@ -1844,9 +1926,37 @@ class BackendB1GMail extends BackendDiff
 			$folderid,
 			$id));
 		
-		// TODO
+		$result = false;
 		
-		return(false);
+		$res = $this->db->Query('SELECT `body`,`size` FROM {pre}mails WHERE `id`=? AND `userid`=?',
+			$id,
+			$this->userID);
+		while($row = $res->FetchArray(MYSQL_ASSOC))
+		{
+			if($row['body'] == 'file')
+			{
+				$msgFilename = $this->DataFilename($id);
+				@unlink($msgFilename);
+			}
+			
+			$this->db->Query('DELETE FROM {pre}certmails WHERE `mail`=? AND `user`=?',
+				$id,
+				$this->userID);
+			$this->db->Query('DELETE FROM {pre}attachments WHERE `mailid`=?',
+				$id);
+			$this->db->Query('DELETE FROM {pre}mails WHERE `id`=?',
+				$id);
+			$this->db->Query('UPDATE {pre}users SET `mailspace_used`=GREATEST(0,`mailspace_used`-?) WHERE `id`=?',
+				$row['size'],
+				$this->userID);
+			
+			$this->IncMailboxGeneration();
+			
+			$result = true;
+		}
+		$res->Free();
+		
+		return($result);
 	}
 	
 	/**
@@ -2299,6 +2409,15 @@ class BackendB1GMail extends BackendDiff
 	private function IncMailboxGeneration()
 	{
 		$this->db->Query('UPDATE {pre}users SET `mailbox_generation`=`mailbox_generation`+1 WHERE `id`=?',
+			$this->userID);
+	}
+	
+	/**
+	 * Increment the acocunt's mailbox structure generation
+	 */
+	private function IncMailboxStructureGeneration()
+	{
+		$this->db->Query('UPDATE {pre}users SET `mailbox_structure_generation`=`mailbox_structure_generation`+1 WHERE `id`=?',
 			$this->userID);
 	}
 	
