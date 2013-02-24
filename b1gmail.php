@@ -1857,7 +1857,7 @@ class BackendB1GMail extends BackendDiff
 			$id,
 			$flags));
 		
-		if(strlen($newfolderid) <= 7 || substr($newfolderid, 0, 7) != '.email:')
+		if(strlen($folderid) <= 7 || substr($folderid, 0, 7) != '.email:')
 			return(false);
 		
 		// get current mail flags
