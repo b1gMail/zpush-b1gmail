@@ -1000,7 +1000,6 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Internally used function to get details of an email.
-	 * TODO! NOT FULLY IMPLEMENTED YET!
 	 *
 	 * @param string $folderid Folder ID
 	 * @param string $id Email ID
@@ -1139,8 +1138,6 @@ class BackendB1GMail extends BackendDiff
 				$result->asbody->truncated = false;
 			
 			$result->asbody->estimatedDataSize = strlen($result->asbody->data);
-			
-			// TODO: preview
 		}
 		else
 		{
@@ -1179,11 +1176,65 @@ class BackendB1GMail extends BackendDiff
 		// ...and attachments
 		if($bodyPrefType != SYNC_BODYPREFERENCE_MIME)
 		{
-			// TODO: get attachments
+			$attachments = $this->GetAttachmentsFromParsedMail($parsedMail);
+			
+			foreach($attachments as $partID=>$part)
+			{
+				// get attachment size
+				if(isset($part->body))
+					$attSize = strlen($part->body);
+				else
+					$attSize = 0;
+				
+				// get attachment name
+				if(isset($part->d_parameters['filename']))
+					$attName = $part->d_parameters['filename'];
+				else if(isset($part->d_parameters['name']))
+					$attName = $part->d_parameters['name'];
+				else
+					$attName = 'Unnamed';
+				
+				// reference string
+				$attRef = $id . ':' . $partID;
+				
+				// content id
+				if(isset($part->d_parameters['content-id']))
+					$attContentID = $part->d_parameters['content-id'];
+				else
+					$attContentID = '';
+				$attContentID = trim(str_replace(array('<', '>'), '', $attContentID));
+				
+				if(Request::GetProtocolVersion() >= 12.0)
+				{
+					$att = new SyncBaseAttachment();
+					$att->estimatedDataSize = $attSize;
+					$att->displayname 		= $attName;
+					$att->filereference 	= $attRef;
+					$att->isinline			= isset($part->disposition) && $part->disposition == 'inline';
+					$att->contentid			= $attContentID;
+					$att->method			= 1;
+					
+					if(empty($result->asattachments))
+						$result->asattachments = array($att);
+					else
+						$result->asattachments[] = $att;
+				}
+				else
+				{
+					$att = new SyncAttachment();
+					$att->attsize			= $attSize;
+					$att->displayname		= $attName;
+					$att->attname			= $attRef;
+					$att->attoid			= $attContentID;
+					$att->attmethod			= 1;
+					
+					if(empty($result->attachments))
+						$result->attachments = array($att);
+					else
+						$result->attachments[] = $att;
+				}
+			}
 		}
-		
-		// TODO: remove logging of result object once finished
-		ZLog::Write(LOGLEVEL_DEBUG, print_r($result, true));
 
 		return($result);
 	}
@@ -2401,6 +2452,45 @@ class BackendB1GMail extends BackendDiff
 		}
 		
 		return($body);
+	}
+	
+	/**
+	 * Get attachment parts from mail.
+	 *
+	 * @param object $parsedMail Parsed mail as returned by Mail_mimeDecode class
+	 * @return array
+	 */
+	private function GetAttachmentsFromParsedMail($parsedMail)
+	{
+		$result = array();
+		$objs = $parsedMail->parts;
+		
+		while(is_array($objs) && count($objs) > 0)
+		{
+			$part = array_shift($objs);
+			
+			if(!isset($part->ctype_primary))
+				continue;
+			
+			// also process sub-parts
+			if($part->ctype_primary == 'multipart' && in_array($part->ctype_secondary, array('alternative', 'mixed', 'related')))
+			{
+				$objs = array_merge($objs, $part->parts);
+				continue;
+			}
+			
+			// do not consider text parts as attachment
+			if($part->ctype_primary == 'text')
+				continue;
+			
+			// if content disposition is set, only proceed if it is set to attachment or inline
+			if(!empty($part->disposition) && !in_array($part->disposition, array('attachment', 'inline')))
+				continue;
+			
+			$result[] = $part;
+		}
+		
+		return($result);
 	}
 	
 	/**
