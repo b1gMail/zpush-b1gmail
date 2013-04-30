@@ -2451,7 +2451,7 @@ class BackendB1GMail extends BackendDiff
 				$objs = array_merge($objs, $obj->parts);
 		}
 		
-		return($body);
+		return($result);
 	}
 	
 	/**
