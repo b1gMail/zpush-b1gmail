@@ -25,6 +25,7 @@
 
 include_once('lib/default/diffbackend/diffbackend.php');
 require_once('backend/b1gmail/db.php');
+require_once('backend/b1gmail/sendmail.php');
 require_once('include/mimeDecode.php');
 require_once('include/z_RFC822.php');
 
@@ -36,6 +37,7 @@ class BackendB1GMail extends BackendDiff
 	private $loggedOn = false;
 	private $userID = 0;
 	private $userRow;
+	private $groupRow;
 	
 	/**
 	 * class constructor
@@ -108,7 +110,7 @@ class BackendB1GMail extends BackendDiff
 		}
 		
 		// check group permission
-		$res = $this->db->Query('SELECT `syncml` FROM {pre}gruppen WHERE `id`=?',
+		$res = $this->db->Query('SELECT * FROM {pre}gruppen WHERE `id`=?',
 			$userRow['gruppe']);
 		if($res->RowCount() != 1)
 		{
@@ -127,6 +129,7 @@ class BackendB1GMail extends BackendDiff
 		$this->loggedOn 	= true;
 		$this->userID 		= $userRow['id'];
 		$this->userRow		= $userRow;
+		$this->groupRow 	= $groupRow;
 		return(true);
 	}
 	
@@ -147,12 +150,190 @@ class BackendB1GMail extends BackendDiff
 	}
 	
 	/**
-	 * Send mail
-	 * TODO! NOT IMPLEMENTED YET!
+	 * Send mail, save copy in outbox
+	 *
+	 * @param SendMail $sm
+	 * @return bool
 	 */
 	public function SendMail($sm)
 	{
-		return(false);
+		ZLog::Write(LOGLEVEL_DEBUG, 'b1gMail::SendMail()');
+
+		// check sending frequency
+		if(($this->userRow['last_send'] + $this->groupRow['send_limit']) > time())
+		{
+			ZLog::Write(LOGLEVEL_INFO, 'SendMail(): Message rejected: Maximum sending frequency violation');
+			return(false);
+		}
+
+		// parse message
+		$mimeParser = new Mail_mimeDecode($sm->mime);
+		$parsedMail = $mimeParser->decode(array(
+			'decode_headers' => true,
+			'decode_bodies' => false,
+			'include_bodies' => false,
+			'charset' => 'utf-8'));
+
+		// extract recipients
+		$recipientsStr = '';
+		if(!empty($parsedMail->headers['to']))
+			$recipientsStr .= ' ' . $parsedMail->headers['to'];
+		if(!empty($parsedMail->headers['cc']))
+			$recipientsStr .= ' ' . $parsedMail->headers['cc'];
+		if(!empty($parsedMail->headers['bcc']))
+			$recipientsStr .= ' ' . $parsedMail->headers['bcc'];
+		$recipients = $this->ExtractMailAddresses($recipientsStr);
+		$sender = $this->ExtractMailAddress($parsedMail->headers['from']);
+
+		// check recipient limit
+		if(count($recipients) > $this->groupRow['max_recps'])
+		{
+			ZLog::Write(LOGLEVEL_INFO, 'SendMail(): Message rejected: Too many recipients');
+			return(false);
+		}
+
+		// check if sender matches account address / alias
+		if(!in_array(strtolower($sender), $this->GetPossibleSenders()))
+		{
+			ZLog::Write(LOGLEVEL_INFO, 'SendMail(): Message rejected: Sender not allowed (does not match any account email address)');
+			return(false);
+		}
+
+		// copy to temp stream
+		$fp = fopen('php://temp', 'wb+');
+		fwrite($fp, $sm->mime);
+		fseek($fp, 0, SEEK_SET);
+
+		// send
+		$sendmail = new b1gMailSendMail($this->prefs);
+		$sendmail->SetUserID($this->userID);
+		$sendmail->SetSender($sender);
+		$sendmail->SetMailFrom($this->userRow['email']);
+		$sendmail->SetRecipients($recipients);
+		$sendmail->SetSubject(isset($parsedMail->headers['subject'])
+			? $parsedMail->headers['subject']
+			: '(no subject)');
+		$sendmail->SetBodyStream($fp);
+		$result = $sendmail->Send();
+
+		// close temp stream
+		fclose($fp);
+
+		if($result)
+		{
+			// update last send
+			$this->db->Query('UPDATE {pre}users SET `last_send`=?,`sent_mails`=`sent_mails`+? WHERE `id`=?',
+				time(),
+				count($recipients),
+				$this->userID);
+
+			// date?
+			$date = @strtotime($parsedMail->headers['date']);
+			if($date <= 0)
+				$date = time();
+
+			// priority?
+			if(isset($parsedMail->headers['x-priority']))
+			{
+				switch((int)$parsedMail->headers['x-priority'])
+				{
+				case 1:
+					$priority = 'high';
+					break;
+				
+				case 5:
+					$priority = 'normal';
+					break;
+					
+				default:
+					$priority = 'low';
+					break;
+				}
+			}
+			else
+			{
+				$priority = 'normal';
+			}
+
+			// extract message ID
+			$messageIDs = $this->ExtractMessageIDs($parsedMail->headers['message-id']);
+			$messageID = count($messageIDs) > 0
+				? $messageIDs[0]
+				: '<' . uniqid() . '@' . $this->prefs['b1gmta_host'] . '>';
+
+			// references
+			$references = '';
+			if(!empty($parsedMail->headers['references']))
+				$references .= ' ' . $parsedMail->headers['references'];
+			if(!empty($parsedMail->headers['in-reply-to']))
+				$references .= ' ' . $parsedMail->headers['in-reply-to'];
+			$references = $this->ExtractMessageIDs($references);
+
+			// flags
+			$mailFlags = 0;
+			if(!empty($parsedMail->headers['content-type'])
+				&& stripos($parsedMail->headers['content-type'], 'multipart/mixed') !== false)		// TODO: implement more sophisticated attachment check
+			{
+				$mailFlags |= 64; 	// atachment
+			}
+
+			// size
+			$mailSize = strlen($sm->mime);
+
+			// copy to outbox if enough free space
+			if($this->userRow['mailspace_used'] + $mailSize <= $this->groupRow['storage'])
+			{
+				$this->db->Query('INSERT INTO {pre}mails(userid,betreff,von,an,cc,body,folder,datum,trashstamp,priority,fetched,msg_id,virnam,trained,refs,flags,size) VALUES '
+					. '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+					$this->userID,
+					!empty($parsedMail->headers['subject']) ? $parsedMail->headers['subject'] 	: '',
+					!empty($parsedMail->headers['from']) 	? $parsedMail->headers['from'] 		: '',
+					!empty($parsedMail->headers['to']) 		? $parsedMail->headers['to'] 		: '',
+					!empty($parsedMail->headers['cc']) 		? $parsedMail->headers['cc'] 		: '',
+					'file',
+					-2,
+					$date,
+					0,
+					$priority,
+					time(),
+					$messageID,
+					'',
+					0,
+					implode(';;;', $references),
+					$mailFlags,
+					$mailSize);
+				$mailID = $this->db->InsertId();
+
+				// create file
+				if($mailID)
+				{
+					$fn = $this->DataFilename($mailID);
+					if(@file_put_contents($fn, $sm->mime) !== false)
+					{
+						@chmod($fn, 0666);
+					}
+					else
+					{
+						ZLog::Write(LOGLEVEL_ERROR, sprintf('SendMail(): Failed to create mail file %s', $fn));
+					}
+				}
+				else
+				{
+					ZLog::Write(LOGLEVEL_ERROR, 'SendMail(): Failed to insert mail into database');
+				}
+
+				// update space, increment mailbox generation
+				$this->UpdateMailSpace($mailSize);
+				$this->IncMailboxGeneration();
+			}
+			else
+			{
+				ZLog::Write(LOGLEVEL_INFO, 'SendMail(): Message not saved to outbox (not enough free space)');
+				return(false);
+			}
+		}
+
+		return($result);
 	}
 	
 	/**
@@ -2492,7 +2673,34 @@ class BackendB1GMail extends BackendDiff
 		
 		return($result);
 	}
-	
+
+	/**
+	 * update mail space
+	 *
+	 * @param int $bytes Bytes (negative or positive)
+	 * @return boolean
+	 */
+	private function UpdateMailSpace($bytes)
+	{
+		if($bytes == 0)
+			return(true);
+		
+		if($bytes < 0)
+		{
+			$this->db->Query('UPDATE {pre}users SET `mailspace_used`=GREATEST(0,`mailspace_used`-' . abs($bytes) . ') WHERE `id`=?',
+				$this->userID);
+			$this->userRow['mailspace_used'] -= abs($bytes);
+		}
+		else if($bytes > 0)
+		{
+			$this->db->Query('UPDATE {pre}users SET `mailspace_used`=GREATEST(0,`mailspace_used`+' . abs($bytes) . ') WHERE `id`=?',
+				$this->userID);
+			$this->userRow['mailspace_used'] += abs($bytes);
+		}
+		
+		return(true);
+	}
+
 	/**
 	 * Increase the account's mailbox generation.
 	 */
@@ -2556,5 +2764,84 @@ class BackendB1GMail extends BackendDiff
 		}
 		
 		return('');
+	}
+
+	/**
+	 * extract mail address from a string
+	 *
+	 * @param string $string
+	 * @return string
+	 */
+	private function ExtractMailAddress($string)
+	{
+		$ret = '';
+		$ret_arr = array();
+		if(preg_match_all('/[a-zA-Z0-9&=\'\\.\\-_\\+]+@[a-zA-Z0-9.-]+\\.+[a-zA-Z]{2,6}/', $string, $ret_arr) > 0)
+			$ret = $ret_arr[0][0];
+		return($ret);
+	}
+
+	/**
+	 * extract mail addresses from string
+	 *
+	 * @param string $string
+	 * @return array
+	 */
+	private function ExtractMailAddresses($string)
+	{
+		$result = $ret_arr = array();
+		preg_match_all('/[a-zA-Z0-9&=\'\\.\\-_\\+]+@[a-zA-Z0-9.-]+\\.+[a-zA-Z]{2,6}/', $string, $ret_arr);
+		foreach($ret_arr[0] as $ret)
+			if(!in_array($ret, $result))
+				$result[] = $ret;
+		return($result);
+	}
+
+	/**
+	 * extract message ids from string
+	 *
+	 * @param string $str
+	 * @return array
+	 */
+	private function ExtractMessageIDs($str)
+	{
+		$ret_arr = $result = array();
+		preg_match_all('/<([^>]+)>/', $str, $ret_arr);
+		foreach($ret_arr[0] as $ret)
+			if(!in_array($ret, $result))
+				$result[] = $ret;
+		return($result);
+	}
+
+	/**
+	 * get user's possible sender email addresses
+	 * 
+	 * @return array
+	 */
+	private function GetPossibleSenders()
+	{
+		$senders = array(strtolower($this->userRow['email']));
+
+		// aliases
+		$res = $this->db->Query('SELECT `email`,`type` FROM {pre}aliase WHERE `user`=?',
+			$this->userID);
+		while($row = $res->FetchArray(MYSQL_ASSOC))
+		{
+			if(($row['type'] & 1) != 0 && ($row['type'] & 4) == 0)
+				$senders[] = strtolower($row['email']);
+		}
+		$res->Free();
+
+		// workgroups
+		$res = $this->db->Query('SELECT `email` FROM {pre}workgroups INNER JOIN {pre}workgroups_member ON {pre}workgroups.`id`={pre}workgroups_member.`workgroup` '
+			. 'WHERE {pre}workgroups_member.`user`=?',
+			$this->userID);
+		while($row = $res->FetchArray(MYSQL_ASSOC))
+		{
+			$senders[] = strtolower($row['email']);
+		}
+		$res->Free();
+
+		return($senders);
 	}
 };
