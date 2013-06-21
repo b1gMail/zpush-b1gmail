@@ -28,6 +28,7 @@ require_once('backend/b1gmail/db.php');
 require_once('backend/b1gmail/sendmail.php');
 require_once('include/mimeDecode.php');
 require_once('include/z_RFC822.php');
+require_once('include/stringstreamwrapper.php');
 
 class BackendB1GMail extends BackendDiff
 {
@@ -338,11 +339,71 @@ class BackendB1GMail extends BackendDiff
 	
 	/**
 	 * Get attachment data
-	 * TODO! NOT IMPLEMENTED YET!
+	 * 
+	 * @param string $attname Attachment name
+	 * @return SyncItemOperationsAttachment
 	 */
 	public function GetAttachmentData($attname)
 	{
-		return(false);
+		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::GetAttachmentData(%s)', $attname));
+	
+		if(strpos($attname, ':') === false)
+		{
+			ZLog::Write(LOGLEVEL_INFO, 'GetAttachmentData(): Invalid attname');
+			return(false);
+		}
+
+		// parse attname
+		list($mailID, $partID) = explode(':', $attname);
+
+		// get mail row
+		$res = $this->db->Query('SELECT `body` FROM {pre}mails WHERE `id`=? AND `userid`=?',
+			$mailID,
+			$this->userID);
+		if($res->RowCount() != 1)
+		{
+			ZLog::Write(LOGLEVEL_INFO, 'GetAttachmentData(): Mail not found');
+			return(false);
+		}
+		$row = $res->FetchArray(MYSQL_ASSOC);
+		$res->Free();
+		
+		// get message
+		if($row['body'] == 'file')
+			$mailData = @file_get_contents($this->DataFilename($mailID));
+		else
+			$mailData = $row['body'];
+		unset($row['body']);
+		
+		// parse message
+		$mimeParser = new Mail_mimeDecode($mailData);
+		$parsedMail = $mimeParser->decode(array(
+			'decode_headers' => true,
+			'decode_bodies' => true,
+			'include_bodies' => true,
+			'charset' => 'utf-8'));
+
+		// get attachments
+		$attachments = $this->GetAttachmentsFromParsedMail($parsedMail);
+
+		// free up memory
+		unset($parsedMail);
+		unset($mimeParser);
+
+		// check part iD
+		if(!isset($attachments[$partID]))
+		{
+			ZLog::Write(LOGLEVEL_INFO, 'GetAttachmentData(): Attachment not found in mail');
+			return(false);
+		}
+
+		// create result object
+		$att = new SyncItemOperationsAttachment();
+		$att->data = StringStreamWrapper::Open($attachments[$partID]->body);
+		if(isset($attachments[$partID]->ctype_primary) && isset($attachments[$partID]->ctype_secondary))
+			$att->contenttype = $attachments[$partID]->ctype_primary . '/' . $attachments[$partID]->ctype_secondary;
+
+		return($att);
 	}
 	
 	/**
@@ -352,6 +413,8 @@ class BackendB1GMail extends BackendDiff
 	 */
 	public function GetWasteBasket()
 	{
+		ZLog::Write(LOGLEVEL_DEBUG, 'b1gMail::GetWasteBasket()');
+
 		return('.email:-5');
 	}
 
