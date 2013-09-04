@@ -2689,9 +2689,9 @@ class BackendB1GMail extends BackendDiff
 			if(!isset($obj->ctype_primary))
 				continue;
 			
-			if($obj->ctype_primary == 'text' && $obj->ctype_secondary == $type)
+			if(strtolower($obj->ctype_primary) == 'text' && strtolower($obj->ctype_secondary) == strtolower($type))
 				$result .= $obj->body;
-			else if($obj->ctype_primary == 'multipart' && !empty($obj->parts))
+			else if(strtolower($obj->ctype_primary) == 'multipart' && !empty($obj->parts))
 				$objs = array_merge($objs, $obj->parts);
 		}
 		
@@ -2717,14 +2717,14 @@ class BackendB1GMail extends BackendDiff
 				continue;
 			
 			// also process sub-parts
-			if($part->ctype_primary == 'multipart' && in_array($part->ctype_secondary, array('alternative', 'mixed', 'related')))
+			if(strtolower($part->ctype_primary) == 'multipart' && in_array(strtolower($part->ctype_secondary), array('alternative', 'mixed', 'related')))
 			{
 				$objs = array_merge($objs, $part->parts);
 				continue;
 			}
 			
 			// do not consider text parts as attachment
-			if($part->ctype_primary == 'text')
+			if(strtolower($part->ctype_primary) == 'text')
 				continue;
 			
 			// if content disposition is set, only proceed if it is set to attachment or inline
