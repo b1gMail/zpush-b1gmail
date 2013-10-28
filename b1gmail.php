@@ -1575,7 +1575,7 @@ class BackendB1GMail extends BackendDiff
 		if(!empty($row['picture']))
 		{
 			$picArray = @unserialize($row['picture']);
-			if(is_array($picArray))
+			if(is_array($picArray) && strlen($picArray['data'])*1.34 <= 49152)	// do not attach too big images to avoid Z-Push dropping the entire contact
 				$result->picture		= base64_encode($picArray['data']);
 		}
 		
@@ -2707,6 +2707,10 @@ class BackendB1GMail extends BackendDiff
 	private function GetAttachmentsFromParsedMail($parsedMail)
 	{
 		$result = array();
+
+		if(!isset($parsedMail->parts))
+			return($result);
+		
 		$objs = $parsedMail->parts;
 		
 		while(is_array($objs) && count($objs) > 0)
