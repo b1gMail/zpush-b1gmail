@@ -125,7 +125,7 @@ class BackendB1GMail extends BackendDiff
 			ZLog::Write(LOGLEVEL_ERROR, sprintf('Login as "%s" failed: synchronization not allowed in group settings', $username));
 			return(false);
 		}
-		
+
 		// login successful
 		$this->loggedOn 	= true;
 		$this->userID 		= $userRow['id'];
@@ -374,7 +374,7 @@ class BackendB1GMail extends BackendDiff
 		else
 			$mailData = $row['body'];
 		unset($row['body']);
-		
+			
 		// parse message
 		$mimeParser = new Mail_mimeDecode($mailData);
 		$parsedMail = $mimeParser->decode(array(
@@ -1744,11 +1744,13 @@ class BackendB1GMail extends BackendDiff
 	 * @param object $message New message data
 	 * @return array Same as StatMessage($folderid, $id)
 	 */
-	public function ChangeMessage($folderid, $id, $message)
+	public function ChangeMessage($folderid, $id, $message, $contentParameters)
 	{
 		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::ChangeMessage(%s,%s)',
 			$folderid,
 			$id));
+
+		// TODO: figure out the role of $contentParameters and implement functionality, if needed
 
 		if($folderid == '.contacts')
 			return($this->ChangeContact($folderid, $id, $message));
@@ -2145,12 +2147,14 @@ class BackendB1GMail extends BackendDiff
 	 * @param int $flags Flag
 	 * @return bool
 	 */
-	public function SetReadFlag($folderid, $id, $flags)
+	public function SetReadFlag($folderid, $id, $flags, $contentParameters)
 	{
 		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::SetReadFlag(%s,%s,%s)',
 			$folderid,
 			$id,
 			$flags));
+
+		// TODO: figure out the role of $contentParameters and implement functionality, if needed
 		
 		if(strlen($folderid) <= 7 || substr($folderid, 0, 7) != '.email:')
 			return(false);
@@ -2190,11 +2194,13 @@ class BackendB1GMail extends BackendDiff
 	 * @param string $id Message ID
 	 * @return bool
 	 */
-	public function DeleteMessage($folderid, $id)
+	public function DeleteMessage($folderid, $id, $contentParameters)
 	{
 		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::DeleteMessage(%s,%s)',
 			$folderid,
 			$id));
+
+		// TODO: figure out the role of $contentParameters and implement functionality, if needed
 
 		if($folderid == '.contacts')
 			return($this->DeleteContact($folderid, $id));
@@ -2335,12 +2341,14 @@ class BackendB1GMail extends BackendDiff
 	 * @param string $newfolderid New folder ID
 	 * @return bool
 	 */
-	public function MoveMessage($folderid, $id, $newfolderid)
+	public function MoveMessage($folderid, $id, $newfolderid, $contentParameters)
 	{
 		ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::MoveMessage(%s,%s,%s)',
 			$folderid,
 			$id,
 			$newfolderid));
+		
+		// TODO: figure out the role of $contentParameters and implement functionality, if needed
 
 		if($folderid == '.contacts')
 			return(false);
