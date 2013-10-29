@@ -3,7 +3,7 @@ Installing the Z-Push b1gMail backend
 
 Requirements
 ------------
-The Z-Push b1gMail backend requires Z-Push 2 and b1gMail >= 7.3.0-Beta5.
+The Z-Push b1gMail backend requires Z-Push 2.1 and b1gMail >= 7.3.0-Beta5.
 b1gMail has to be in UTF-8 mode.
 
 Installing
