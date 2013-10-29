@@ -36,6 +36,9 @@ class BackendB1GMail extends BackendDiff
 	private $db;
 	private $prefs;
 	private $loggedOn = false;
+	private $tccmeInstalled = false;
+	private $tccmePrivKey = false;
+	private $tccmeCert = false;
 	private $userID = 0;
 	private $userRow;
 	private $groupRow;
@@ -126,11 +129,31 @@ class BackendB1GMail extends BackendDiff
 			return(false);
 		}
 
+		// check for tccme (clever mail encryption) plugin
+		$this->tccmeInstalled = false;
+		$res = $this->db->Query('SHOW TABLES');
+		while($row = $res->FetchArray(MYSQL_NUM))
+		{
+			if($row[0] == 'bm60_tccme_plugin_settings')
+			{
+				ZLog::Write(LOGLEVEL_DEBUG, 'TCCME plugin found');
+				$this->tccmeInstalled = true;
+			}
+		}
+		$res->Free();
+		
 		// login successful
 		$this->loggedOn 	= true;
 		$this->userID 		= $userRow['id'];
 		$this->userRow		= $userRow;
 		$this->groupRow 	= $groupRow;
+
+		// load tccme key, if necessary
+		if($this->tccmeInstalled)
+		{
+			$this->LoadTCCMEKey($password) && $this->LoadTCCMECert();
+		}
+
 		return(true);
 	}
 	
@@ -145,6 +168,8 @@ class BackendB1GMail extends BackendDiff
 			$this->loggedOn 	= false;
 			$this->userID		= 0;
 			$this->userRow		= false;
+			$this->tccmePrivKey	= false;
+			$this->tccmeCert  	= false;
 		}
 		
 		$this->SaveStorages();
@@ -369,12 +394,9 @@ class BackendB1GMail extends BackendDiff
 		$res->Free();
 		
 		// get message
-		if($row['body'] == 'file')
-			$mailData = @file_get_contents($this->DataFilename($mailID));
-		else
-			$mailData = $row['body'];
+		$mailData = $this->GetMessageData($mailID, $row['body']);
 		unset($row['body']);
-			
+		
 		// parse message
 		$mimeParser = new Mail_mimeDecode($mailData);
 		$parsedMail = $mimeParser->decode(array(
@@ -1300,10 +1322,7 @@ class BackendB1GMail extends BackendDiff
 		$result->importance		= $prioTrans[$row['priority']];
 		
 		// get message
-		if($row['body'] == 'file')
-			$mailData = @file_get_contents($this->DataFilename($id));
-		else
-			$mailData = $row['body'];
+		$mailData = $this->GetMessageData($id, $row['body']);
 		unset($row['body']);
 		
 		// parse message
@@ -2918,5 +2937,148 @@ class BackendB1GMail extends BackendDiff
 		$res->Free();
 
 		return($senders);
+	}
+
+ 	/**
+ 	 * get entry from user preferences table
+ 	 *
+ 	 * @param string $key
+ 	 * @return string
+ 	 */
+	private function GetUserPref($key)
+	{
+		$result = '';
+
+		$res = $this->db->Query('SELECT `value` FROM {pre}userprefs WHERE `userID`=? AND `key`=?',
+			$this->userID,
+			$key);
+		while($row = $res->FetchArray(MYSQL_ASSOC))
+		{
+			$result = $row['value'];
+		}
+		$res->Free();
+
+		return($result);
+	}
+
+	/**
+	 * load and decrypt TCCME private key
+	 *
+	 * @param string $password Plain text password
+	 * @return bool
+	 */
+	private function LoadTCCMEKey($password)
+	{
+		ZLog::Write(LOGLEVEL_DEBUG, 'b1gMail::LoadTCCMEKey()');
+
+		$this->tccmePrivKey = false;
+
+		// compute xor crypt key
+		$xorSalt = $this->GetUserPref('XORKeySalt');
+		if(strlen($xorSalt) > 0)
+			$xorSalt = base64_decode($xorSalt);
+		$xorCryptKey = md5($password . $xorSalt);
+
+		// get priv key
+		$privKeyData = $this->GetUserPref('tccme_privatekey');
+		if($privKeyData)
+		{
+			$privKey = openssl_pkey_get_private($privKeyData, $xorCryptKey);
+			if(!@openssl_pkey_export($privKey, $privKey))
+			{
+				ZLog::Write(LOGLEVEL_ERROR, sprintf('b1gMail::LoadTCCMEKey(): Could not load TCCME private key for user %d: %s',
+					$this->userID,
+					openssl_error_string()));
+			}
+			else
+			{
+				$this->tccmePrivKey = $privKey;
+				ZLog::Write(LOGLEVEL_DEBUG, 'b1gMail::LoadTCCMEKey(): TCCME private key loaded successfully');
+				return(true);
+			}
+		}
+		else
+			ZLog::Write(LOGLEVEL_DEBUG, 'b1gMail::LoadTCCMEKey(): No TCCME private key for user found');
+
+		return(false);
+	}
+
+	/**
+	 * load TCCME certificate
+	 *
+	 * @return bool
+	 */
+	private function LoadTCCMECert()
+	{
+		ZLog::Write(LOGLEVEL_DEBUG, 'b1gMail::LoadTCCMECert()');
+
+		$this->tccmeCert = false;
+
+		$certData = $this->GetUserPref('tccme_cert');
+		if($certData)
+		{
+			$this->tccmeCert = openssl_x509_read($certData);
+			return(true);
+		}
+
+		return(false);
+	}
+
+	/**
+	 * get message data
+	 *
+	 * @param int $id Mail ID
+	 * @param string $body body column from mail row
+	 * @return string
+	 */
+	function GetMessageData($id, $body)
+	{
+		if($body == 'file')
+			$mailData = @file_get_contents($this->DataFilename($id));
+		else
+			$mailData = $body;
+
+		// tccme handling
+		if($this->tccmeInstalled)
+		{
+			$res = $this->db->Query('SELECT COUNT(*) FROM {pre}tccme_plugin_mail WHERE `mail_id`=?',
+				$id);
+			list($entryCount) = $res->FetchArray(MYSQL_NUM);
+			$res->Free();
+
+			if($entryCount && strpos($mailData, 'X-EncodedBy: CleverMailEncryption') !== false)
+			{
+				ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::GetMessageData(%d): Message is encrypted by TCCME, attempting decryption', $id));
+
+				$srcFileName = tempnam('', 'enc');
+				$destFileName = tempnam('', 'dec');
+
+				if(file_put_contents($srcFileName, $mailData) !== false)
+				{
+					if(@openssl_pkcs7_decrypt($srcFileName, $destFileName, $this->tccmeCert, $this->tccmePrivKey))
+					{
+						$mailData = file_get_contents($destFileName);
+						ZLog::Write(LOGLEVEL_DEBUG, sprintf('b1gMail::GetMessageData(%d): Message decrypted successfully', $id));
+					}
+					else
+					{
+						ZLog::Write(LOGLEVEL_ERROR, sprintf('b1gMail::GetMessageData(%d): Failed to decrypt message', $id));
+					}
+				}
+				else 
+				{
+					ZLog::Write(LOGLEVEL_ERROR, sprintf('b1gMail::GetMessageData(%d): Failed to create temp file: %s',
+						$id,
+						$srcFileName));
+				}
+
+				if(file_exists($srcFileName))
+					@unlink($srcFileName);
+				if(file_exists($destFileName))
+					@unlink($destFileName);
+			}
+		}
+
+		return($mailData);
 	}
 };
