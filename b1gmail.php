@@ -6,7 +6,7 @@
  *                   Z-Push to a b1gMail database.
  * Created         : 27.01.2013
  *
- * Copyright (C) 2013 Patrick Schlangen <ps@b1g.de>
+ * Copyright (C) 2013-2015 Patrick Schlangen <ps@b1g.de>
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -388,7 +388,7 @@ class BackendB1GMail extends BackendDiff
 		if($res->RowCount() != 1)
 		{
 			ZLog::Write(LOGLEVEL_INFO, 'GetAttachmentData(): Mail not found');
-			return(false);
+			throw new StatusException(sprintf('GetAttachmentData(): Mail not found: %d', $mailID), SYNC_STATUS_OBJECTNOTFOUND);
 		}
 		$row = $res->FetchArray(MYSQL_ASSOC);
 		$res->Free();
@@ -413,10 +413,10 @@ class BackendB1GMail extends BackendDiff
 		unset($mimeParser);
 
 		// check part iD
-		if(!isset($attachments[$partID]))
+		if(!isset($attachments[$partID]) || !is_object($attachments[$partID]) || !isset($attachments[$partID]->body))
 		{
 			ZLog::Write(LOGLEVEL_INFO, 'GetAttachmentData(): Attachment not found in mail');
-			return(false);
+			throw new StatusException(sprintf('GetAttachmentData(): Attachment %s not found in mail %d', $partID, $mailID), SYNC_STATUS_OBJECTNOTFOUND);
 		}
 
 		// create result object
