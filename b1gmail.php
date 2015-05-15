@@ -1259,7 +1259,8 @@ class BackendB1GMail extends BackendDiff
 		$result->sensitivity	= 0;
 		$result->busystatus		= 2;
 		$result->meetingstatus	= 0;
-		$result->timezone 		= false;	// TODO: Timezone data generation should be implemented.
+		//$result->timezone 		= false;	// TODO: Timezone data generation should be implemented.
+		$result->timezone 		= date_default_timezone_get(); 
 		
 		return($result);
 	}
