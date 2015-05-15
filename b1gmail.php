@@ -88,6 +88,10 @@ class BackendB1GMail extends BackendDiff
 	 */
 	public function Logon($username, $domain, $password)
 	{
+		// add domain, if required
+		if(strpos($username, '@') === false && !empty($domain))
+			$username .= '@' . $domain;
+		
 		// get user row
 		$res = $this->db->Query('SELECT * FROM {pre}users WHERE `email`=? LIMIT 1',
 			$username);
@@ -107,7 +111,7 @@ class BackendB1GMail extends BackendDiff
 		}
 		
 		// check password
-		if($userRow['passwort'] != md5(md5($password) . $userRow['passwort_salt']))
+		if($userRow['passwort'] !== md5(md5($password) . $userRow['passwort_salt']))
 		{
 			ZLog::Write(LOGLEVEL_ERROR, sprintf('Login as "%s" failed: wrong password', $username));
 			return(false);
