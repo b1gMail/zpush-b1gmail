@@ -28,7 +28,6 @@ require_once('backend/b1gmail/db.php');
 require_once('backend/b1gmail/sendmail.php');
 require_once('include/mimeDecode.php');
 require_once('include/z_RFC822.php');
-require_once('include/stringstreamwrapper.php');
 
 class BackendB1GMail extends BackendDiff
 {
@@ -88,10 +87,6 @@ class BackendB1GMail extends BackendDiff
 	 */
 	public function Logon($username, $domain, $password)
 	{
-		// add domain, if required
-		if(strpos($username, '@') === false && !empty($domain))
-			$username .= '@' . $domain;
-		
 		// get user row
 		$res = $this->db->Query('SELECT * FROM {pre}users WHERE `email`=? LIMIT 1',
 			$username);

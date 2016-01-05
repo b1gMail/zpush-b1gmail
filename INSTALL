@@ -3,7 +3,7 @@ Installing the Z-Push b1gMail backend
 
 Requirements
 ------------
-The Z-Push b1gMail backend requires Z-Push 2.1 and b1gMail >= 7.3.0-Beta5.
+The Z-Push b1gMail backend requires Z-Push 2.2 and b1gMail >= 7.3.0-Beta5.
 b1gMail has to be in UTF-8 mode.
 
 Installing
@@ -27,6 +27,10 @@ login according to your environment:
 	define('B1GMAIL_DB_PASS',		'password');
 	define('B1GMAIL_DB_DB',			'b1gmail');
 	define('B1GMAIL_DB_PREFIX',		'bm60_');
+
+The backend requires the full email address to be used for login.
+To achieve this, modify the appropriate line:
+    define('USE_FULLEMAIL_FOR_LOGIN', true);
 
 Allow synchronization in the b1gMail ACP at 'Users & Groups' =>
 'Groups' to allow access to the Z-Push service.
