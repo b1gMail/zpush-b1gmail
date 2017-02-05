@@ -177,7 +177,48 @@ class BackendB1GMail extends BackendDiff
 
 		$this->SaveStorages();
 	}
-	
+
+	/**
+	 * check if user is allowed to send email (check send limit)
+	 *
+	 * @param $recipientCount Number of recipients
+	 * @return bool
+	 */
+	function MaySendMail($recipientCount)
+	{
+		if($recipientCount < 1)
+			return(false);
+
+		if($this->groupRow['send_limit_count'] <= 0 || $this->groupRow['send_limit_time'] <= 0)
+			return(true);
+
+		if($recipientCount > $this->groupRow['send_limit_count'])
+			return(false);
+
+		$res = $this->db->Query('SELECT SUM(`recipients`) FROM {pre}sendstats WHERE `userid`=? AND `time`>=?',
+			$this->userID,
+			time() - 60 * $this->groupRow['send_limit_time']);
+		$row = $res->FetchArray(MYSQL_NUM);
+		$res->Free();
+
+		$count = (int)$row[0];
+
+		return($count + $recipientCount <= $this->groupRow['send_limit_count']);
+	}
+
+	/**
+	 * add email to send stats (for send limit)
+	 *
+	 * @param $recipientCount Number of recipients
+	 */
+	function AddSendStat($recipientCount)
+	{
+		$this->db->Query('INSERT INTO {pre}sendstats(`userid`,`recipients`,`time`) VALUES(?,?,?)',
+			$this->userID,
+			max(1, $recipientCount),
+			time());
+	}
+
 	/**
 	 * Send mail, save copy in outbox
 	 *
@@ -187,13 +228,6 @@ class BackendB1GMail extends BackendDiff
 	public function SendMail($sm)
 	{
 		ZLog::Write(LOGLEVEL_DEBUG, 'b1gMail::SendMail()');
-
-		// check sending frequency
-		if(($this->userRow['last_send'] + $this->groupRow['send_limit']) > time())
-		{
-			ZLog::Write(LOGLEVEL_INFO, 'SendMail(): Message rejected: Maximum sending frequency violation');
-			return(false);
-		}
 
 		// parse message
 		$mimeParser = new Mail_mimeDecode($sm->mime);
@@ -213,6 +247,13 @@ class BackendB1GMail extends BackendDiff
 			$recipientsStr .= ' ' . $parsedMail->headers['bcc'];
 		$recipients = $this->ExtractMailAddresses($recipientsStr);
 		$sender = $this->ExtractMailAddress($parsedMail->headers['from']);
+
+		// check sending frequency
+		if(!$this->MaySendMail(count($recipients)))
+		{
+			ZLog::Write(LOGLEVEL_INFO, 'SendMail(): Message rejected: Maximum sending frequency violation');
+			return(false);
+		}
 
 		// check recipient limit
 		if(count($recipients) > $this->groupRow['max_recps'])
@@ -250,6 +291,8 @@ class BackendB1GMail extends BackendDiff
 
 		if($result)
 		{
+			$this->AddSendStat(count($recipients));
+
 			// update last send
 			$this->db->Query('UPDATE {pre}users SET `last_send`=?,`sent_mails`=`sent_mails`+? WHERE `id`=?',
 				time(),
