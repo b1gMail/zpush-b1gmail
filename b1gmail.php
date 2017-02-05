@@ -23,9 +23,13 @@
  *
  */
 
+if(!class_exists('SQLite3') && class_exists('PDO') && in_array('sqlite', PDO::getAvailableDrivers()))
+	require_once('sqlite3.php');
+
 include_once('lib/default/diffbackend/diffbackend.php');
 require_once('backend/b1gmail/db.php');
 require_once('backend/b1gmail/sendmail.php');
+require_once('backend/b1gmail/blobstorage.php');
 require_once('include/mimeDecode.php');
 require_once('include/z_RFC822.php');
 
@@ -33,7 +37,7 @@ class BackendB1GMail extends BackendDiff
 {
 	private $dbHandle;
 	private $db;
-	private $prefs;
+	public $prefs;
 	private $loggedOn = false;
 	private $tccmeInstalled = false;
 	private $tccmePrivKey = false;
@@ -306,16 +310,15 @@ class BackendB1GMail extends BackendDiff
 			$mailSize = strlen($sm->mime);
 
 			// copy to outbox if enough free space
-			if($this->userRow['mailspace_used'] + $mailSize <= $this->groupRow['storage'])
+			if($this->userRow['mailspace_used'] + $mailSize <= $this->groupRow['storage'] + $this->userRow['mailspace_add'])
 			{
-				$this->db->Query('INSERT INTO {pre}mails(userid,betreff,von,an,cc,body,folder,datum,trashstamp,priority,fetched,msg_id,virnam,trained,refs,flags,size) VALUES '
+				$this->db->Query('INSERT INTO {pre}mails(userid,betreff,von,an,cc,folder,datum,trashstamp,priority,fetched,msg_id,virnam,trained,refs,flags,size,blobstorage) VALUES '
 					. '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
 					$this->userID,
 					!empty($parsedMail->headers['subject']) ? $parsedMail->headers['subject'] 	: '',
 					!empty($parsedMail->headers['from']) 	? $parsedMail->headers['from'] 		: '',
 					!empty($parsedMail->headers['to']) 		? $parsedMail->headers['to'] 		: '',
 					!empty($parsedMail->headers['cc']) 		? $parsedMail->headers['cc'] 		: '',
-					'file',
 					-2,
 					$date,
 					0,
@@ -326,20 +329,26 @@ class BackendB1GMail extends BackendDiff
 					0,
 					implode(';;;', $references),
 					$mailFlags,
-					$mailSize);
+					$mailSize,
+					$this->prefs['blobstorage_provider']);
 				$mailID = $this->db->InsertId();
 
 				// create file
 				if($mailID)
 				{
-					$fn = $this->DataFilename($mailID);
-					if(@file_put_contents($fn, $sm->mime) !== false)
+					$provider = $this->CreateBlobStorageProvider($this->prefs['blobstorage_provider']);
+					if($provider)
 					{
-						@chmod($fn, 0666);
+						if(!$provider->storeBlob(BMBLOB_TYPE_MAIL, $mailID, $sm->mime))
+						{
+							ZLog::Write(LOGLEVEL_ERROR, sprintf('SendMail(): Failed to store blob %d using provider %d',
+								$mailID, $this->prefs['blobstorage_provider']));
+						}
 					}
 					else
 					{
-						ZLog::Write(LOGLEVEL_ERROR, sprintf('SendMail(): Failed to create mail file %s', $fn));
+						ZLog::Write(LOGLEVEL_ERROR, sprintf('SendMail(): Failed to create blob storage provider %d',
+							$this->prefs['blobstorage_provider']));
 					}
 				}
 				else
@@ -381,7 +390,7 @@ class BackendB1GMail extends BackendDiff
 		list($mailID, $partID) = explode(':', $attname);
 
 		// get mail row
-		$res = $this->db->Query('SELECT `body` FROM {pre}mails WHERE `id`=? AND `userid`=?',
+		$res = $this->db->Query('SELECT `blobstorage` FROM {pre}mails WHERE `id`=? AND `userid`=?',
 			$mailID,
 			$this->userID);
 		if($res->RowCount() != 1)
@@ -393,9 +402,8 @@ class BackendB1GMail extends BackendDiff
 		$res->Free();
 
 		// get message
-		$mailData = $this->GetMessageData($mailID, $row['body']);
-		unset($row['body']);
-		
+		$mailData = $this->GetMessageData($mailID, $row['blobstorage']);
+
 		// parse message
 		$mimeParser = new Mail_mimeDecode($mailData);
 		$parsedMail = $mimeParser->decode(array(
@@ -1301,7 +1309,7 @@ class BackendB1GMail extends BackendDiff
 		}
 
 		// get mail row
-		$res = $this->db->Query('SELECT `von`,`betreff`,`flags`,`priority`,`datum`,`body` FROM {pre}mails WHERE `id`=? AND `userid`=?',
+		$res = $this->db->Query('SELECT `von`,`betreff`,`flags`,`priority`,`datum`,`blobstorage` FROM {pre}mails WHERE `id`=? AND `userid`=?',
 			$id,
 			$this->userID);
 		if($res->RowCount() != 1)
@@ -1322,9 +1330,8 @@ class BackendB1GMail extends BackendDiff
 		$result->importance		= $prioTrans[$row['priority']];
 
 		// get message
-		$mailData = $this->GetMessageData($id, $row['body']);
-		unset($row['body']);
-		
+		$mailData = $this->GetMessageData($id, $row['blobstorage']);
+
 		// parse message
 		$mimeParser = new Mail_mimeDecode($mailData);
 		$parsedMail = $mimeParser->decode(array(
@@ -1342,47 +1349,48 @@ class BackendB1GMail extends BackendDiff
 			$result->cc = $this->ExplodeOutsideOfQuotation($parsedMail->headers['cc'], array(',', ';'));
 		if(!empty($parsedMail->headers['reply-to']))
 			$result->reply_to = $this->ExplodeOutsideOfQuotation($parsedMail->headers['reply-to'], array(',', ';'));
-		
+
 		// assign other headers which are not available in $row
 		if(isset($parsedMail->headers['thread-topic']))
 			$result->threadtopic = $parsedMail->headers['thread-topic'];
-		
+
 		// get body...
 		if(Request::GetProtocolVersion() >= 12.0)
 		{
 			$result->asbody = new SyncBaseBody();
-			
+			$asBodyData = '';
+
 			// get body according to body preference
 			if($bodyPrefType == SYNC_BODYPREFERENCE_PLAIN)
 			{
-				$result->asbody->data = $this->GetTextFromParsedMail($parsedMail, 'plain');
+				$asBodyData = $this->GetTextFromParsedMail($parsedMail, 'plain');
 				$result->asbody->type = SYNC_BODYPREFERENCE_PLAIN;
 				$result->nativebodytype = SYNC_BODYPREFERENCE_PLAIN;
-				
-				if(empty($result->asbody->data))
+
+				if(empty($asBodyData))
 				{
-					$result->asbody->data = Utils::ConvertHtmlToText($this->GetTextFromParsedMail($parsedMail, 'html'));
+					$asBodyData = Utils::ConvertHtmlToText($this->GetTextFromParsedMail($parsedMail, 'html'));
 					if(!empty($result->asbody->data))
 						$result->nativebodytype = SYNC_BODYPREFERENCE_HTML;
 				}
 			}
 			else if($bodyPrefType == SYNC_BODYPREFERENCE_HTML)
 			{
-				$result->asbody->data = $this->GetTextFromParsedMail($parsedMail, 'html');
+				$asBodyData = $this->GetTextFromParsedMail($parsedMail, 'html');
 				$result->asbody->type = SYNC_BODYPREFERENCE_HTML;
 				$result->nativebodytype = SYNC_BODYPREFERENCE_HTML;
-				
-				if(empty($result->asbody->data))
+
+				if(empty($asBodyData))
 				{
-					$result->asbody->data = $this->GetTextFromParsedMail($parsedMail, 'plain');
-					
+					$asBodyData = $this->GetTextFromParsedMail($parsedMail, 'plain');
+
 					$result->asbody->type = SYNC_BODYPREFERENCE_PLAIN;
 					$result->nativebodytype = SYNC_BODYPREFERENCE_PLAIN;
 				}
 			}
 			else if($bodyPrefType == SYNC_BODYPREFERENCE_MIME)
 			{
-				$result->asbody->data = $mailData;
+				$asBodyData = $mailData;
 				$result->asbody->type = SYNC_BODYPREFERENCE_MIME;
 				$result->nativebodytype = SYNC_BODYPREFERENCE_MIME;
 			}
@@ -1390,57 +1398,60 @@ class BackendB1GMail extends BackendDiff
 			{
 				ZLog::Write(LOGLEVEL_ERROR, sprintf('Unknown body type: %d', $bodyPrefType));
 			}
-			
+
 			// truncate, if required
-			if(strlen($result->asbody->data) > $truncSize)
+			if(strlen($asBodyData) > $truncSize)
 			{
-				$result->asbody->data = Utils::Utf8_truncate($result->asbody->data, $truncSize);
+				$asBodyData = Utils::Utf8_truncate($asBodyData, $truncSize);
 				$result->asbody->truncated = true;
 			}
 			else
 				$result->asbody->truncated = false;
-			
-			$result->asbody->estimatedDataSize = strlen($result->asbody->data);
+
+			$result->asbody->data = StringStreamWrapper::Open($asBodyData);
+			$result->asbody->estimatedDataSize = strlen($asBodyData);
 		}
 		else
 		{
 			if($bodyPrefType == SYNC_BODYPREFERENCE_MIME)
 			{
-				$result->mimedata = $mailData;
-				
-				if(strlen($result->mimedata) > $truncSize)
+				$mimeData = $mailData;
+
+				if(strlen($mimeData) > $truncSize)
 				{
-					$result->mimedata = substr($result->mimedata, 0, $truncSize);
+					$mimeData = substr($mimeData, 0, $truncSize);
 					$result->mimetruncated = true;
 				}
 				else
 					$result->mimetruncated = false;
-				
-				$result->mimesize = strlen($result->mimedata);
+
+				$result->mimedata = StringStreamWrapper::Open($mimeData);
+				$result->mimesize = strlen($mimeData);
 			}
 			else
 			{
-				$result->body = $this->GetTextFromParsedMail($parsedMail, 'plain');
-				if(empty($result->body))
-					$result->body = Utils::ConvertHtmlToText($this->GetTextFromParsedMail($parsedMail, 'html'));
-				
-				if(strlen($result->body) > $truncSize)
+				$bodyData = $this->GetTextFromParsedMail($parsedMail, 'plain');
+				if(empty($bodyData))
+					$bodyData = Utils::ConvertHtmlToText($this->GetTextFromParsedMail($parsedMail, 'html'));
+
+				if(strlen($bodyData) > $truncSize)
 				{
-					$result->body = substr($result->body, 0, $truncSize);
+					$bodyData = substr($bodyData, 0, $truncSize);
 					$result->bodytruncated = true;
 				}
 				else
 					$result->bodytruncated = false;
-				
+
+				$result->body = StringStreamWrapper::Open($bodyData);
 				$result->bodysize = strlen($result->body);
 			}
 		}
-		
+
 		// ...and attachments
 		if($bodyPrefType != SYNC_BODYPREFERENCE_MIME)
 		{
 			$attachments = $this->GetAttachmentsFromParsedMail($parsedMail);
-			
+
 			foreach($attachments as $partID=>$part)
 			{
 				// get attachment size
@@ -2247,18 +2258,16 @@ class BackendB1GMail extends BackendDiff
 			$id));
 
 		$result = false;
-		
-		$res = $this->db->Query('SELECT `body`,`size` FROM {pre}mails WHERE `id`=? AND `userid`=?',
+
+		$res = $this->db->Query('SELECT `blobstorage`,`size` FROM {pre}mails WHERE `id`=? AND `userid`=?',
 			$id,
 			$this->userID);
 		while($row = $res->FetchArray(MYSQL_ASSOC))
 		{
-			if($row['body'] == 'file')
-			{
-				$msgFilename = $this->DataFilename($id);
-				@unlink($msgFilename);
-			}
-			
+			$provider = $this->CreateBlobStorageProvider($row['blobstorage']);
+			if($provider)
+				$provider->deleteBlob(BMBLOB_TYPE_MAIL, $id);
+
 			$this->db->Query('DELETE FROM {pre}certmails WHERE `mail`=? AND `user`=?',
 				$id,
 				$this->userID);
@@ -2602,7 +2611,7 @@ class BackendB1GMail extends BackendDiff
 	 * @param string $ext Extension
 	 * @return string
 	 */
-	private function DataFilename($id, $ext = 'msg')
+	public function DataFilename($id, $ext = 'msg')
 	{
 		$dir = $this->prefs['datafolder'];
 
@@ -3025,18 +3034,59 @@ class BackendB1GMail extends BackendDiff
 	}
 
 	/**
+	 * create instance of blob storage provider
+	 *
+	 * @param int $id Provider ID
+	 * @return BMBlobStorage object
+	 */
+	function CreateBlobStorageProvider($id)
+	{
+		$result = false;
+
+		switch($id)
+		{
+		case BMBLOBSTORAGE_SEPARATEFILES:
+			$result = new BMBlobStorage_SeparateFiles;
+			break;
+		case BMBLOBSTORAGE_USERDB:
+			$result = new BMBlobStorage_UserDB;
+			break;
+		default:
+			ZLog::Write(LOGLEVEL_ERROR, sprintf('Unsupported blob storage backend: %d', $id));
+			break;
+		}
+
+		if($result === false)
+			return false;
+
+		$result->setBackendInstance($this);
+		$result->open($this->userID);
+
+		return $result;
+	}
+
+	/**
 	 * get message data
 	 *
 	 * @param int $id Mail ID
-	 * @param string $body body column from mail row
+	 * @param int $blobStorage Blob storage provider ID
 	 * @return string
 	 */
-	function GetMessageData($id, $body)
+	function GetMessageData($id, $blobStorage)
 	{
-		if($body == 'file')
-			$mailData = @file_get_contents($this->DataFilename($id));
-		else
-			$mailData = $body;
+		$provider = $this->CreateBlobStorageProvider($blobStorage);
+
+		$fp = $provider->loadBlob(BMBLOB_TYPE_MAIL, $id);
+		if(!$fp)
+		{
+			ZLog::Write(LOGLEVEL_ERROR, sprintf('Failed to load blob %d using provider %d', $id, $blobStorage));
+			return '';
+		}
+
+		$mailData = '';
+		while(!feof($fp))
+			$mailData .= fread($fp, 4096);
+		fclose($fp);
 
 		// tccme handling
 		if($this->tccmeInstalled)
