@@ -3,7 +3,7 @@ Installing the Z-Push b1gMail backend
 
 Requirements
 ------------
-The Z-Push b1gMail backend requires Z-Push 2.2 and b1gMail >= 7.3.0-Beta5.
+The Z-Push b1gMail backend requires Z-Push 2.3 and b1gMail >= 7.4.0-Beta3.
 b1gMail has to be in UTF-8 mode.
 
 Installing
@@ -14,7 +14,7 @@ To add the b1gMail backend, create a folder called backend/b1gmail/ in
 your Z-Push directory and copy the  PHP files of the b1gMail backend
 archive into that directory.
 
-Once the files have been copied, edit Z-Push's config.php file and set 
+Once the files have been copied, edit Z-Push's config.php file and set
 the backend provider to 'BackendB1GMail' by modifying the appropriate
 line:
 	define('BACKEND_PROVIDER', 'BackendB1GMail');
