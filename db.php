@@ -38,15 +38,15 @@ class DB
 	}
 	
 	/**
-	 * get server version
+	 * set connection charset
 	 *
-	 * @return string
+	 * @param string $charset
 	 */
-	public function GetServerVersion()
+	function SetCharset($charset)
 	{
-		return(mysql_get_server_info($this->handle));
+		mysqli_set_charset($this->handle, $charset);
 	}
-	
+
 	/**
 	 * escape a string for use in SQL query
 	 *
@@ -55,12 +55,7 @@ class DB
 	 */
 	public function Escape($str)
 	{
-		if(function_exists('mysql_real_escape_string'))
-			return(mysql_real_escape_string($str, $this->handle));
-		else if(function_exists('mysql_escape_string'))
-			return(mysql_escape_string($str));
-		else 
-			return(addslashes($str));
+		return(mysqli_real_escape_string($this->handle, $str));
 	}
 	
 	/**
@@ -113,7 +108,7 @@ class DB
 			}
 		}
 
-		$ok = ($result = mysql_query($query, $this->handle));
+		$ok = ($result = mysqli_query($this->handle, $query));
 		
 		// return new MySQL_Result object if query was successful
 		if($ok)
@@ -122,7 +117,7 @@ class DB
 		}
 		else 
 		{
-			throw new FatalException("MySQL-Error at '" . $_SERVER['SCRIPT_NAME'] . "': '" . mysql_error($this->handle) . "', tried to execute '" . $query . "'", 0, null, LOGLEVEL_FATAL);
+			throw new FatalException("MySQL-Error at '" . $_SERVER['SCRIPT_NAME'] . "': '" . mysqli_error($this->handle) . "', tried to execute '" . $query . "'", 0, null, LOGLEVEL_FATAL);
 			die();
 			return(false);
 		}
@@ -135,7 +130,7 @@ class DB
 	 */
 	public function InsertId()
 	{
-		return(mysql_insert_id($this->handle));
+		return(mysqli_insert_id($this->handle));
 	}
 	
 	/**
@@ -145,7 +140,7 @@ class DB
 	 */
 	public function AffectedRows()
 	{
-		return(mysql_affected_rows($this->handle));
+		return(mysqli_affected_rows($this->handle));
 	}
 }
 
@@ -174,9 +169,9 @@ class DB_Result
 	 *
 	 * @return array
 	 */
-	public function FetchArray($resultType = MYSQL_BOTH)
+	public function FetchArray($resultType = MYSQLI_BOTH)
 	{
-		return(mysql_fetch_array($this->result, $resultType));
+		return(mysqli_fetch_array($this->result, $resultType));
 	}
 	
 	/**
@@ -186,7 +181,7 @@ class DB_Result
 	 */
 	public function FetchObject()
 	{
-		return(mysql_fetch_object($this->result));
+		return(mysqli_fetch_object($this->result));
 	}
 	
 	/**
@@ -196,7 +191,7 @@ class DB_Result
 	 */
 	public function RowCount()
 	{
-		return(mysql_num_rows($this->result));
+		return(mysqli_num_rows($this->result));
 	}
 	
 	/**
@@ -206,7 +201,7 @@ class DB_Result
 	 */
 	public function FieldCount()
 	{
-		return(mysql_num_fields($this->result));
+		return(mysqli_num_fields($this->result));
 	}
 	
 	/**
@@ -217,7 +212,8 @@ class DB_Result
 	 */
 	public function FieldName($index)
 	{
-		return(mysql_field_name($this->result, $index));
+		$field = mysqli_fetch_field_direct($this->result, $index);
+		return($field->name);
 	}
 	
 	/**
@@ -226,6 +222,6 @@ class DB_Result
 	 */
 	public function Free()
 	{
-		@mysql_free_result($this->result);
+		@mysqli_free_result($this->result);
 	}
 }

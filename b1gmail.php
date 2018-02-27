@@ -59,13 +59,13 @@ class BackendB1GMail extends BackendDiff
 		}
 
 		// connect to database
-		$this->dbHandle = mysql_connect(B1GMAIL_DB_HOST, B1GMAIL_DB_USER, B1GMAIL_DB_PASS);
+		$this->dbHandle = mysqli_connect(B1GMAIL_DB_HOST, B1GMAIL_DB_USER, B1GMAIL_DB_PASS);
 		if(!$this->dbHandle)
 			throw new FatalException('Failed to connect to b1gMail MySQL server', 0, null, LOGLEVEL_FATAL);
-		if(!mysql_select_db(B1GMAIL_DB_DB, $this->dbHandle))
+		if(!mysqli_select_db($this->dbHandle, B1GMAIL_DB_DB))
 			throw new FatalException('Failed to select b1gMail MySQL DB', 0, null, LOGLEVEL_FATAL);
 		$this->db = new DB($this->dbHandle);
-		$this->db->Query('SET NAMES utf8');
+		$this->db->SetCharset('utf8');
 
 		// read preferences
 		$this->prefs = $this->GetPrefs();
@@ -78,7 +78,7 @@ class BackendB1GMail extends BackendDiff
 	{
 		// close database connection
 		if($this->dbHandle)
-			mysql_close($this->dbHandle);
+			mysqli_close($this->dbHandle);
 	}
 
 	/**
@@ -99,7 +99,7 @@ class BackendB1GMail extends BackendDiff
 			ZLog::Write(LOGLEVEL_ERROR, sprintf('Login as "%s" failed: user not found', $username));
 			return(false);
 		}
-		$userRow = $res->FetchArray(MYSQL_ASSOC);
+		$userRow = $res->FetchArray(MYSQLI_ASSOC);
 		$res->Free();
 
 		// locked?
@@ -124,7 +124,7 @@ class BackendB1GMail extends BackendDiff
 			ZLog::Write(LOGLEVEL_ERROR, sprintf('Login as "%s" failed: user group not found', $username));
 			return(false);
 		}
-		$groupRow = $res->FetchArray(MYSQL_ASSOC);
+		$groupRow = $res->FetchArray(MYSQLI_ASSOC);
 		$res->Free();
 		if($groupRow['syncml'] != 'yes')
 		{
@@ -135,7 +135,7 @@ class BackendB1GMail extends BackendDiff
 		// check for tccme (clever mail encryption) plugin
 		$this->tccmeInstalled = false;
 		$res = $this->db->Query('SHOW TABLES');
-		while($row = $res->FetchArray(MYSQL_NUM))
+		while($row = $res->FetchArray(MYSQLI_NUM))
 		{
 			if($row[0] == 'bm60_tccme_plugin_settings')
 			{
@@ -198,7 +198,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT SUM(`recipients`) FROM {pre}sendstats WHERE `userid`=? AND `time`>=?',
 			$this->userID,
 			time() - 60 * $this->groupRow['send_limit_time']);
-		$row = $res->FetchArray(MYSQL_NUM);
+		$row = $res->FetchArray(MYSQLI_NUM);
 		$res->Free();
 
 		$count = (int)$row[0];
@@ -441,7 +441,7 @@ class BackendB1GMail extends BackendDiff
 			ZLog::Write(LOGLEVEL_INFO, 'GetAttachmentData(): Mail not found');
 			throw new StatusException(sprintf('GetAttachmentData(): Mail not found: %d', $mailID), SYNC_STATUS_OBJECTNOTFOUND);
 		}
-		$row = $res->FetchArray(MYSQL_ASSOC);
+		$row = $res->FetchArray(MYSQLI_ASSOC);
 		$res->Free();
 
 		// get message
@@ -531,7 +531,7 @@ class BackendB1GMail extends BackendDiff
 		// user-created email folders
 		$res = $this->db->Query('SELECT `id`,`titel`,`parent` FROM {pre}folders WHERE `userid`=? AND `intelligent`=0 AND `subscribed`=1',
 			$this->userID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			if($row['parent'] <= 0)
 				$parentID = '0';
@@ -554,7 +554,7 @@ class BackendB1GMail extends BackendDiff
 		// user-created calendars
 		$res = $this->db->Query('SELECT `id`,`title` FROM {pre}dates_groups WHERE `user`=?',
 			$this->userID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result[] = array(
 				'id'		=> '.dates:' . $row['id'],
@@ -580,7 +580,7 @@ class BackendB1GMail extends BackendDiff
 		// user-created task lists
 		$res = $this->db->Query('SELECT `tasklistid`,`title` FROM {pre}tasklists WHERE `userid`=?',
 			$this->userID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result[] = array(
 				'id'		=> '.tasks:' . $row['tasklistid'],
@@ -635,7 +635,7 @@ class BackendB1GMail extends BackendDiff
 					$calendarID);
 				if($res->RowCount() != 1)
 					return(false);
-				$row = $res->FetchArray(MYSQL_ASSOC);
+				$row = $res->FetchArray(MYSQLI_ASSOC);
 				$res->Free();
 
 				$folder = new SyncFolder();
@@ -668,7 +668,7 @@ class BackendB1GMail extends BackendDiff
 					$taskListID);
 				if($res->RowCount() != 1)
 					return(false);
-				$row = $res->FetchArray(MYSQL_ASSOC);
+				$row = $res->FetchArray(MYSQLI_ASSOC);
 				$res->Free();
 
 				$folder = new SyncFolder();
@@ -719,7 +719,7 @@ class BackendB1GMail extends BackendDiff
 				$res = $this->db->Query('SELECT `titel`,`parent` FROM {pre}folders WHERE `id`=? AND `userid`=? AND `subscribed`=1',
 					$folderID,
 					$this->userID);
-				while($row = $res->FetchArray(MYSQL_ASSOC))
+				while($row = $res->FetchArray(MYSQLI_ASSOC))
 				{
 					if($row['parent'] <= 0)
 						$parentID = '0';
@@ -978,7 +978,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `id` FROM {pre}folders WHERE `parent`=? AND `userid`=?',
 			$folderID,
 			$this->userID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			if($row['id'] == $folderID) continue;
 			$this->DeleteMailFolder('.email:' . $row['id']);
@@ -1057,7 +1057,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}dates'
 								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=1 AND {pre}changelog.`itemid`={pre}dates.`id`'
 								. ' WHERE `user`=? AND `group`=?', $this->userID, $dateGroupID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result[] = array(
 				'id'		=> $row['id'],
@@ -1090,7 +1090,7 @@ class BackendB1GMail extends BackendDiff
 			$this->userID,
 			$cutoffdate,
 			$mailFolderID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result[] = array(
 				'id'		=> $row['id'],
@@ -1122,7 +1122,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}tasks'
 								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=2 AND {pre}changelog.`itemid`={pre}tasks.`id`'
 								. ' WHERE `user`=? AND `tasklistid`=?', $this->userID, $taskListID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result[] = array(
 				'id'		=> $row['id'],
@@ -1153,7 +1153,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}adressen'
 								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=0 AND {pre}changelog.`itemid`={pre}adressen.`id`'
 								. ' WHERE `user`=?', $this->userID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result[] = array(
 				'id'		=> $row['id'],
@@ -1211,7 +1211,7 @@ class BackendB1GMail extends BackendDiff
 			$this->userID, $id);
 		if($res->RowCount() != 1)
 			return(false);
-		$row = $res->FetchArray(MYSQL_ASSOC);
+		$row = $res->FetchArray(MYSQLI_ASSOC);
 		$res->Free();
 
 		// create result object
@@ -1293,7 +1293,7 @@ class BackendB1GMail extends BackendDiff
 								. 'INNER JOIN {pre}dates_attendees ON {pre}adressen.`id`={pre}dates_attendees.`address` '
 								. 'WHERE `user`=? AND `date`=?',
 								$this->userID, $id);
-		while($attRow = $res->FetchArray(MYSQL_ASSOC))
+		while($attRow = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$att = new SyncAttendee();
 			$att->name 	= trim($attRow['vorname'] . ' ' . $attRow['nachname']);
@@ -1357,7 +1357,7 @@ class BackendB1GMail extends BackendDiff
 			$this->userID);
 		if($res->RowCount() != 1)
 			return(false);
-		$row = $res->FetchArray(MYSQL_ASSOC);
+		$row = $res->FetchArray(MYSQLI_ASSOC);
 		$res->Free();
 
 		// create result object
@@ -1580,7 +1580,7 @@ class BackendB1GMail extends BackendDiff
 			$this->userID, $id);
 		if($res->RowCount() != 1)
 			return(false);
-		$row = $res->FetchArray(MYSQL_ASSOC);
+		$row = $res->FetchArray(MYSQLI_ASSOC);
 		$res->Free();
 
 		$result = new SyncTask();
@@ -1617,7 +1617,7 @@ class BackendB1GMail extends BackendDiff
 			$this->userID, $id);
 		if($res->RowCount() != 1)
 			return(false);
-		$row = $res->FetchArray(MYSQL_ASSOC);
+		$row = $res->FetchArray(MYSQLI_ASSOC);
 		$res->Free();
 
 		$result = new SyncContact();
@@ -1703,7 +1703,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}dates'
 								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=1 AND {pre}changelog.`itemid`={pre}dates.`id`'
 								. ' WHERE `user`=? AND `id`=?', $this->userID, $id);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result = array(
 				'id'		=> $row['id'],
@@ -1734,7 +1734,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `id`,`fetched`,`flags` FROM {pre}mails WHERE `userid`=? AND `id`=?',
 			$this->userID,
 			$id);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result = array(
 				'id'		=> $row['id'],
@@ -1765,7 +1765,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}tasks'
 								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=2 AND {pre}changelog.`itemid`={pre}tasks.`id`'
 								. ' WHERE `user`=? AND `id`=?', $this->userID, $id);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result = array(
 				'id'		=> $row['id'],
@@ -1796,7 +1796,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `id`,`created`,`updated` FROM {pre}adressen'
 								. ' LEFT JOIN {pre}changelog ON {pre}changelog.`itemtype`=0 AND {pre}changelog.`itemid`={pre}adressen.`id`'
 								. ' WHERE `user`=? AND `id`=?', $this->userID, $id);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result = array(
 				'id'		=> $row['id'],
@@ -1856,7 +1856,7 @@ class BackendB1GMail extends BackendDiff
 				$id, $this->userID);
 			if($res->RowCount() != 1)
 				return(false);
-			$row = $res->FetchArray(MYSQL_ASSOC);
+			$row = $res->FetchArray(MYSQLI_ASSOC);
 			$res->Free();
 		}
 		else
@@ -2018,7 +2018,7 @@ class BackendB1GMail extends BackendDiff
 					$att->email, $att->email, $this->userID);
 				if($res->RowCount() != 1)
 					continue;
-				$attRow = $res->FetchArray(MYSQL_ASSOC);
+				$attRow = $res->FetchArray(MYSQLI_ASSOC);
 				$res->Free();
 
 				$attIDs[] = $attRow['id'];
@@ -2181,7 +2181,7 @@ class BackendB1GMail extends BackendDiff
 				$id, $this->userID);
 			if($res->RowCount() != 1)
 				return(false);
-			$row = $res->FetchArray(MYSQL_ASSOC);
+			$row = $res->FetchArray(MYSQLI_ASSOC);
 			$res->Free();
 
 			if($task->complete)
@@ -2238,7 +2238,7 @@ class BackendB1GMail extends BackendDiff
 			$this->userID);
 		if($res->RowCount() != 1)
 			return(false);
-		list($mailFlags) = $res->FetchArray(MYSQL_NUM);
+		list($mailFlags) = $res->FetchArray(MYSQLI_NUM);
 		$res->Free();
 
 		// mark as unread (add b1gMail's unread flag)
@@ -2305,7 +2305,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `blobstorage`,`size` FROM {pre}mails WHERE `id`=? AND `userid`=?',
 			$id,
 			$this->userID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$provider = $this->CreateBlobStorageProvider($row['blobstorage']);
 			if($provider)
@@ -2562,7 +2562,7 @@ class BackendB1GMail extends BackendDiff
 	{
 		$res = $this->db->Query('SELECT COUNT(*) FROM {pre}changelog WHERE `itemtype`=? AND `itemid`=?',
 			$itemType, $itemID);
-		list($count) = $res->FetchArray(MYSQL_NUM);
+		list($count) = $res->FetchArray(MYSQLI_NUM);
 		$res->Free();
 
 		if($count == 0)
@@ -2588,7 +2588,7 @@ class BackendB1GMail extends BackendDiff
 	{
 		$res = $this->db->Query('SELECT COUNT(*) FROM {pre}changelog WHERE `itemtype`=? AND `itemid`=?',
 			$itemType, $itemID);
-		list($count) = $res->FetchArray(MYSQL_NUM);
+		list($count) = $res->FetchArray(MYSQLI_NUM);
 		$res->Free();
 
 		if($count == 0)
@@ -2614,7 +2614,7 @@ class BackendB1GMail extends BackendDiff
 	{
 		$res = $this->db->Query('SELECT COUNT(*) FROM {pre}changelog WHERE `itemtype`=? AND `itemid`=?',
 			$itemType, $itemID);
-		list($count) = $res->FetchArray(MYSQL_NUM);
+		list($count) = $res->FetchArray(MYSQLI_NUM);
 		$res->Free();
 
 		if($count == 0)
@@ -2693,7 +2693,7 @@ class BackendB1GMail extends BackendDiff
 	private function GetPrefs()
 	{
 		$res = $this->db->Query('SELECT * FROM {pre}prefs LIMIT 1');
-		$prefs = $res->FetchArray(MYSQL_ASSOC);
+		$prefs = $res->FetchArray(MYSQLI_ASSOC);
 		$res->Free();
 
 		return($prefs);
@@ -2971,7 +2971,7 @@ class BackendB1GMail extends BackendDiff
 		// aliases
 		$res = $this->db->Query('SELECT `email`,`type` FROM {pre}aliase WHERE `user`=?',
 			$this->userID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			if(($row['type'] & 1) != 0 && ($row['type'] & 4) == 0)
 				$senders[] = strtolower($row['email']);
@@ -2982,7 +2982,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `email` FROM {pre}workgroups INNER JOIN {pre}workgroups_member ON {pre}workgroups.`id`={pre}workgroups_member.`workgroup` '
 			. 'WHERE {pre}workgroups_member.`user`=?',
 			$this->userID);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$senders[] = strtolower($row['email']);
 		}
@@ -3004,7 +3004,7 @@ class BackendB1GMail extends BackendDiff
 		$res = $this->db->Query('SELECT `value` FROM {pre}userprefs WHERE `userID`=? AND `key`=?',
 			$this->userID,
 			$key);
-		while($row = $res->FetchArray(MYSQL_ASSOC))
+		while($row = $res->FetchArray(MYSQLI_ASSOC))
 		{
 			$result = $row['value'];
 		}
@@ -3136,7 +3136,7 @@ class BackendB1GMail extends BackendDiff
 		{
 			$res = $this->db->Query('SELECT COUNT(*) FROM {pre}tccme_plugin_mail WHERE `mail_id`=?',
 				$id);
-			list($entryCount) = $res->FetchArray(MYSQL_NUM);
+			list($entryCount) = $res->FetchArray(MYSQLI_NUM);
 			$res->Free();
 
 			if($entryCount && strpos($mailData, 'X-EncodedBy: CleverMailEncryption') !== false)
